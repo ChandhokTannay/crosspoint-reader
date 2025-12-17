@@ -5,8 +5,20 @@
 
 #include "config.h"
 
-constexpr int PAGE_ITEMS = 24;
+namespace {
+constexpr int ITEM_HEIGHT_PX = 30;
+constexpr int LIST_TOP_Y = 60;
+constexpr int LIST_BOTTOM_PADDING_PX = 20;
 constexpr int SKIP_PAGE_MS = 700;
+
+int getPageItems(const GfxRenderer& renderer) {
+  const int available = renderer.getScreenHeight() - LIST_TOP_Y - LIST_BOTTOM_PADDING_PX;
+  if (available <= ITEM_HEIGHT_PX) {
+    return 1;
+  }
+  return available / ITEM_HEIGHT_PX;
+}
+}  // namespace
 
 void EpubReaderChapterSelectionActivity::taskTrampoline(void* param) {
   auto* self = static_cast<EpubReaderChapterSelectionActivity*>(param);
@@ -49,6 +61,7 @@ void EpubReaderChapterSelectionActivity::loop() {
       inputManager.wasReleased(InputManager::BTN_DOWN) || inputManager.wasReleased(InputManager::BTN_RIGHT);
 
   const bool skipPage = inputManager.getHeldTime() > SKIP_PAGE_MS;
+  const int pageItems = getPageItems(renderer);
 
   if (inputManager.wasPressed(InputManager::BTN_CONFIRM)) {
     onSelectSpineIndex(selectorIndex);
@@ -57,14 +70,14 @@ void EpubReaderChapterSelectionActivity::loop() {
   } else if (prevReleased) {
     if (skipPage) {
       selectorIndex =
-          ((selectorIndex / PAGE_ITEMS - 1) * PAGE_ITEMS + epub->getSpineItemsCount()) % epub->getSpineItemsCount();
+          ((selectorIndex / pageItems - 1) * pageItems + epub->getSpineItemsCount()) % epub->getSpineItemsCount();
     } else {
       selectorIndex = (selectorIndex + epub->getSpineItemsCount() - 1) % epub->getSpineItemsCount();
     }
     updateRequired = true;
   } else if (nextReleased) {
     if (skipPage) {
-      selectorIndex = ((selectorIndex / PAGE_ITEMS + 1) * PAGE_ITEMS) % epub->getSpineItemsCount();
+      selectorIndex = ((selectorIndex / pageItems + 1) * pageItems) % epub->getSpineItemsCount();
     } else {
       selectorIndex = (selectorIndex + 1) % epub->getSpineItemsCount();
     }
@@ -90,16 +103,17 @@ void EpubReaderChapterSelectionActivity::renderScreen() {
   const auto pageWidth = renderer.getScreenWidth();
   renderer.drawCenteredText(READER_FONT_ID, 10, "Select Chapter", true, BOLD);
 
-  const auto pageStartIndex = selectorIndex / PAGE_ITEMS * PAGE_ITEMS;
-  renderer.fillRect(0, 60 + (selectorIndex % PAGE_ITEMS) * 30 + 2, pageWidth - 1, 30);
-  for (int i = pageStartIndex; i < epub->getSpineItemsCount() && i < pageStartIndex + PAGE_ITEMS; i++) {
+  const int pageItems = getPageItems(renderer);
+  const auto pageStartIndex = selectorIndex / pageItems * pageItems;
+  renderer.fillRect(0, LIST_TOP_Y + (selectorIndex % pageItems) * ITEM_HEIGHT_PX + 2, pageWidth - 1, ITEM_HEIGHT_PX);
+  for (int i = pageStartIndex; i < epub->getSpineItemsCount() && i < pageStartIndex + pageItems; i++) {
     const int tocIndex = epub->getTocIndexForSpineIndex(i);
     if (tocIndex == -1) {
-      renderer.drawText(UI_FONT_ID, 20, 60 + (i % PAGE_ITEMS) * 30, "Unnamed", i != selectorIndex);
+      renderer.drawText(UI_FONT_ID, 20, LIST_TOP_Y + (i % pageItems) * ITEM_HEIGHT_PX, "Unnamed", i != selectorIndex);
     } else {
       auto item = epub->getTocItem(tocIndex);
-      renderer.drawText(UI_FONT_ID, 20 + (item.level - 1) * 15, 60 + (i % PAGE_ITEMS) * 30, item.title.c_str(),
-                        i != selectorIndex);
+      renderer.drawText(UI_FONT_ID, 20 + (item.level - 1) * 15, LIST_TOP_Y + (i % pageItems) * ITEM_HEIGHT_PX,
+                        item.title.c_str(), i != selectorIndex);
     }
   }
 

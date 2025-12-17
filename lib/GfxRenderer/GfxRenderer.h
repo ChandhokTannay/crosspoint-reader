@@ -8,6 +8,7 @@
 class GfxRenderer {
  public:
   enum RenderMode { BW, GRAYSCALE_LSB, GRAYSCALE_MSB };
+  enum Orientation { PORTRAIT, LANDSCAPE };
 
  private:
   static constexpr size_t BW_BUFFER_CHUNK_SIZE = 8000;  // 8KB chunks to allow for non-contiguous memory
@@ -17,6 +18,7 @@ class GfxRenderer {
 
   EInkDisplay& einkDisplay;
   RenderMode renderMode;
+  Orientation orientation = PORTRAIT;
   uint8_t* bwBufferChunks[BW_BUFFER_NUM_CHUNKS] = {nullptr};
   std::map<int, EpdFontFamily> fontMap;
   void renderChar(const EpdFontFamily& fontFamily, uint32_t cp, int* x, const int* y, bool pixelState,
@@ -24,15 +26,17 @@ class GfxRenderer {
   void freeBwBufferChunks();
 
  public:
-  explicit GfxRenderer(EInkDisplay& einkDisplay) : einkDisplay(einkDisplay), renderMode(BW) {}
+  explicit GfxRenderer(EInkDisplay& einkDisplay) : einkDisplay(einkDisplay), renderMode(BW), orientation(PORTRAIT) {}
   ~GfxRenderer() = default;
 
   // Setup
   void insertFont(int fontId, EpdFontFamily font);
 
   // Screen ops
-  static int getScreenWidth();
-  static int getScreenHeight();
+  int getScreenWidth() const;
+  int getScreenHeight() const;
+  void setOrientation(const Orientation newOrientation) { this->orientation = newOrientation; }
+  Orientation getOrientation() const { return orientation; }
   void displayBuffer(EInkDisplay::RefreshMode refreshMode = EInkDisplay::FAST_REFRESH) const;
   // EXPERIMENTAL: Windowed update - display only a rectangular region (portrait coordinates)
   void displayWindow(int x, int y, int width, int height) const;

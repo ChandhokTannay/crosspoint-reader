@@ -21,6 +21,10 @@ class CrossPointSettings {
   // Text rendering settings
   uint8_t extraParagraphSpacing = 1;
 
+  // Reader layout settings
+  // If enabled, render EPUB pages in landscape (horizontal) orientation.
+  uint8_t horizontalReading = 0;
+
   ~CrossPointSettings() = default;
 
   // Get singleton instance

@@ -25,6 +25,9 @@ void EpubReaderActivity::taskTrampoline(void* param) {
 }
 
 void EpubReaderActivity::onEnter() {
+  // Apply reader orientation before any rendering happens.
+  renderer.setOrientation(SETTINGS.horizontalReading ? GfxRenderer::LANDSCAPE : GfxRenderer::PORTRAIT);
+
   if (!epub) {
     return;
   }
@@ -65,6 +68,9 @@ void EpubReaderActivity::onExit() {
   renderingMutex = nullptr;
   section.reset();
   epub.reset();
+
+  // Restore default UI orientation for other screens.
+  renderer.setOrientation(GfxRenderer::PORTRAIT);
 }
 
 void EpubReaderActivity::loop() {
@@ -194,10 +200,12 @@ void EpubReaderActivity::renderScreen() {
     currentSpineIndex = epub->getSpineItemsCount();
   }
 
+  const int centerY = (renderer.getScreenHeight() - renderer.getLineHeight(READER_FONT_ID)) / 2;
+
   // Show end of book screen
   if (currentSpineIndex == epub->getSpineItemsCount()) {
     renderer.clearScreen();
-    renderer.drawCenteredText(READER_FONT_ID, 300, "End of book", true, BOLD);
+    renderer.drawCenteredText(READER_FONT_ID, centerY, "End of book", true, BOLD);
     renderer.displayBuffer();
     return;
   }
@@ -216,7 +224,7 @@ void EpubReaderActivity::renderScreen() {
         const int textWidth = renderer.getTextWidth(READER_FONT_ID, "Indexing...");
         constexpr int margin = 20;
         // Round all coordinates to 8 pixel boundaries
-        const int x = ((GfxRenderer::getScreenWidth() - textWidth - margin * 2) / 2 + 7) / 8 * 8;
+        const int x = ((renderer.getScreenWidth() - textWidth - margin * 2) / 2 + 7) / 8 * 8;
         constexpr int y = 56;
         const int w = (textWidth + margin * 2 + 7) / 8 * 8;
         const int h = (renderer.getLineHeight(READER_FONT_ID) + margin * 2 + 7) / 8 * 8;
@@ -250,7 +258,7 @@ void EpubReaderActivity::renderScreen() {
 
   if (section->pageCount == 0) {
     Serial.printf("[%lu] [ERS] No pages to render\n", millis());
-    renderer.drawCenteredText(READER_FONT_ID, 300, "Empty chapter", true, BOLD);
+    renderer.drawCenteredText(READER_FONT_ID, centerY, "Empty chapter", true, BOLD);
     renderStatusBar();
     renderer.displayBuffer();
     return;
@@ -258,7 +266,7 @@ void EpubReaderActivity::renderScreen() {
 
   if (section->currentPage < 0 || section->currentPage >= section->pageCount) {
     Serial.printf("[%lu] [ERS] Page out of bounds: %d (max %d)\n", millis(), section->currentPage, section->pageCount);
-    renderer.drawCenteredText(READER_FONT_ID, 300, "Out of bounds", true, BOLD);
+    renderer.drawCenteredText(READER_FONT_ID, centerY, "Out of bounds", true, BOLD);
     renderStatusBar();
     renderer.displayBuffer();
     return;
@@ -325,7 +333,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page) {
 }
 
 void EpubReaderActivity::renderStatusBar() const {
-  constexpr auto textY = 776;
+  const int screenWidth = renderer.getScreenWidth();
+  const int screenHeight = renderer.getScreenHeight();
+  const int textY = screenHeight - renderer.getLineHeight(SMALL_FONT_ID) - 4;
 
   // Calculate progress in book
   float sectionChapterProg = static_cast<float>(section->currentPage) / section->pageCount;
@@ -335,8 +345,7 @@ void EpubReaderActivity::renderStatusBar() const {
   const std::string progress = std::to_string(section->currentPage + 1) + "/" + std::to_string(section->pageCount) +
                                "  " + std::to_string(bookProgress) + "%";
   const auto progressTextWidth = renderer.getTextWidth(SMALL_FONT_ID, progress.c_str());
-  renderer.drawText(SMALL_FONT_ID, GfxRenderer::getScreenWidth() - marginRight - progressTextWidth, textY,
-                    progress.c_str());
+  renderer.drawText(SMALL_FONT_ID, screenWidth - marginRight - progressTextWidth, textY, progress.c_str());
 
   // Left aligned battery icon and percentage
   const uint16_t percentage = battery.readPercentage();
@@ -347,8 +356,8 @@ void EpubReaderActivity::renderStatusBar() const {
   // 1 column on left, 2 columns on right, 5 columns of battery body
   constexpr int batteryWidth = 15;
   constexpr int batteryHeight = 10;
-  constexpr int x = marginLeft;
-  constexpr int y = 783;
+  const int x = marginLeft;
+  const int y = screenHeight - batteryHeight - 4;
 
   // Top line
   renderer.drawLine(x, y, x + batteryWidth - 4, y);
@@ -373,7 +382,7 @@ void EpubReaderActivity::renderStatusBar() const {
   // Page width minus existing content with 30px padding on each side
   const int titleMarginLeft = 20 + percentageTextWidth + 30 + marginLeft;
   const int titleMarginRight = progressTextWidth + 30 + marginRight;
-  const int availableTextWidth = GfxRenderer::getScreenWidth() - titleMarginLeft - titleMarginRight;
+  const int availableTextWidth = screenWidth - titleMarginLeft - titleMarginRight;
   const int tocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
 
   std::string title;

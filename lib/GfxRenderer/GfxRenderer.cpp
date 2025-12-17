@@ -13,12 +13,21 @@ void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
     return;
   }
 
-  // Rotate coordinates: portrait (480x800) -> landscape (800x480)
-  // Rotation: 90 degrees clockwise
-  const int rotatedX = y;
-  const int rotatedY = EInkDisplay::DISPLAY_HEIGHT - 1 - x;
+  int rotatedX;
+  int rotatedY;
 
-  // Bounds checking (portrait: 480x800)
+  if (orientation == PORTRAIT) {
+    // Rotate coordinates: portrait (480x800) -> landscape (800x480)
+    // Rotation: 90 degrees clockwise
+    rotatedX = y;
+    rotatedY = EInkDisplay::DISPLAY_HEIGHT - 1 - x;
+  } else {
+    // Landscape orientation uses the display driver's native coordinates.
+    rotatedX = x;
+    rotatedY = y;
+  }
+
+  // Bounds checking
   if (rotatedX < 0 || rotatedX >= EInkDisplay::DISPLAY_WIDTH || rotatedY < 0 ||
       rotatedY >= EInkDisplay::DISPLAY_HEIGHT) {
     Serial.printf("[%lu] [GFX] !! Outside range (%d, %d)\n", millis(), x, y);
@@ -115,8 +124,12 @@ void GfxRenderer::fillRect(const int x, const int y, const int width, const int 
 }
 
 void GfxRenderer::drawImage(const uint8_t bitmap[], const int x, const int y, const int width, const int height) const {
-  // Flip X and Y for portrait mode
-  einkDisplay.drawImage(bitmap, y, x, height, width);
+  if (orientation == PORTRAIT) {
+    // Flip X and Y for portrait mode
+    einkDisplay.drawImage(bitmap, y, x, height, width);
+  } else {
+    einkDisplay.drawImage(bitmap, x, y, width, height);
+  }
 }
 
 void GfxRenderer::clearScreen(const uint8_t color) const { einkDisplay.clearScreen(color); }
@@ -133,22 +146,30 @@ void GfxRenderer::displayBuffer(const EInkDisplay::RefreshMode refreshMode) cons
 }
 
 void GfxRenderer::displayWindow(const int x, const int y, const int width, const int height) const {
-  // Rotate coordinates from portrait (480x800) to landscape (800x480)
-  // Rotation: 90 degrees clockwise
-  // Portrait coordinates: (x, y) with dimensions (width, height)
-  // Landscape coordinates: (rotatedX, rotatedY) with dimensions (rotatedWidth, rotatedHeight)
+  if (orientation == PORTRAIT) {
+    // Rotate coordinates from portrait (480x800) to landscape (800x480)
+    // Rotation: 90 degrees clockwise
+    // Portrait coordinates: (x, y) with dimensions (width, height)
+    // Landscape coordinates: (rotatedX, rotatedY) with dimensions (rotatedWidth, rotatedHeight)
 
-  const int rotatedX = y;
-  const int rotatedY = EInkDisplay::DISPLAY_HEIGHT - 1 - x - width + 1;
-  const int rotatedWidth = height;
-  const int rotatedHeight = width;
+    const int rotatedX = y;
+    const int rotatedY = EInkDisplay::DISPLAY_HEIGHT - 1 - x - width + 1;
+    const int rotatedWidth = height;
+    const int rotatedHeight = width;
 
-  einkDisplay.displayWindow(rotatedX, rotatedY, rotatedWidth, rotatedHeight);
+    einkDisplay.displayWindow(rotatedX, rotatedY, rotatedWidth, rotatedHeight);
+  } else {
+    einkDisplay.displayWindow(x, y, width, height);
+  }
 }
 
-// Note: Internal driver treats screen in command orientation, this library treats in portrait orientation
-int GfxRenderer::getScreenWidth() { return EInkDisplay::DISPLAY_HEIGHT; }
-int GfxRenderer::getScreenHeight() { return EInkDisplay::DISPLAY_WIDTH; }
+int GfxRenderer::getScreenWidth() const {
+  return (orientation == PORTRAIT) ? EInkDisplay::DISPLAY_HEIGHT : EInkDisplay::DISPLAY_WIDTH;
+}
+
+int GfxRenderer::getScreenHeight() const {
+  return (orientation == PORTRAIT) ? EInkDisplay::DISPLAY_WIDTH : EInkDisplay::DISPLAY_HEIGHT;
+}
 
 int GfxRenderer::getSpaceWidth(const int fontId) const {
   if (fontMap.count(fontId) == 0) {

@@ -125,11 +125,11 @@ void FileSelectionActivity::displayTaskLoop() {
 void FileSelectionActivity::render() const {
   renderer.clearScreen();
 
-  const auto pageWidth = GfxRenderer::getScreenWidth();
+  const auto pageWidth = renderer.getScreenWidth();
   renderer.drawCenteredText(READER_FONT_ID, 10, "CrossPoint Reader", true, BOLD);
 
   // Help text
-  renderer.drawText(SMALL_FONT_ID, 20, GfxRenderer::getScreenHeight() - 30, "Press BACK for Home");
+  renderer.drawText(SMALL_FONT_ID, 20, renderer.getScreenHeight() - 30, "Press BACK for Home");
 
   if (files.empty()) {
     renderer.drawText(UI_FONT_ID, 20, 60, "No EPUBs found");

@@ -7,8 +7,8 @@
 #include "images/CrossLarge.h"
 
 void SleepActivity::onEnter() {
-  const auto pageWidth = GfxRenderer::getScreenWidth();
-  const auto pageHeight = GfxRenderer::getScreenHeight();
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
 
   renderer.clearScreen();
   renderer.drawImage(CrossLarge, (pageWidth - 128) / 2, (pageHeight - 128) / 2, 128, 128);

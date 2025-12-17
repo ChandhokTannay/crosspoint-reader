@@ -1,10 +1,12 @@
 #pragma once
+#include <GfxRenderer.h>
+
 #include <memory>
+#include <string>
 
 #include "Epub.h"
 
 class Page;
-class GfxRenderer;
 
 class Section {
   std::shared_ptr<Epub> epub;
@@ -22,7 +24,8 @@ class Section {
 
   explicit Section(const std::shared_ptr<Epub>& epub, const int spineIndex, GfxRenderer& renderer)
       : epub(epub), spineIndex(spineIndex), renderer(renderer) {
-    cachePath = epub->getCachePath() + "/" + std::to_string(spineIndex);
+    cachePath = epub->getCachePath() + "/" + std::to_string(spineIndex) +
+                (renderer.getOrientation() == GfxRenderer::LANDSCAPE ? "_landscape" : "");
   }
   ~Section() = default;
   bool loadCacheMetadata(int fontId, float lineCompression, int marginTop, int marginRight, int marginBottom,
