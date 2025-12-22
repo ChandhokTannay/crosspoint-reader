@@ -60,7 +60,9 @@ void ReaderActivity::onEnter() {
 
   auto epub = loadEpub(initialEpubPath);
   if (!epub) {
-    onGoBack();
+    // If the last-opened EPUB can't be loaded (moved/deleted/corrupt),
+    // fall back to the file selection screen instead of bouncing back home.
+    onGoToFileSelection();
     return;
   }
 

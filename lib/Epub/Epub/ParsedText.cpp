@@ -134,7 +134,23 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
     const bool isLastLine = lineBreak == totalWordCount;
 
     if (style == TextBlock::JUSTIFIED && !isLastLine && lineWordCount >= 2) {
-      spacing = spareSpace / (lineWordCount - 1);
+      // For justified text, start from the natural space width and distribute only
+      // the remaining space, with a cap so words don't get stretched too far apart
+      // when using smaller fonts.
+      const int baseSpacesTotal = spaceWidth * static_cast<int>(lineWordCount - 1);
+      int extraSpace = spareSpace - baseSpacesTotal;
+      if (extraSpace > 0) {
+        int extraPerGap = extraSpace / static_cast<int>(lineWordCount - 1);
+        // Soften justification: only apply part of the extra space per gap.
+        spacing = spaceWidth + extraPerGap / 2;
+        // Cap spacing to avoid exaggerated gaps between words.
+        const int maxSpacing = spaceWidth * 2;
+        if (spacing > maxSpacing) {
+          spacing = maxSpacing;
+        }
+      } else {
+        spacing = spaceWidth;
+      }
     }
 
     // Calculate initial x position

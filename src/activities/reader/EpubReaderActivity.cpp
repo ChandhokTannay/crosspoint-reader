@@ -12,7 +12,8 @@
 namespace {
 constexpr int pagesPerRefresh = 15;
 constexpr unsigned long skipChapterMs = 700;
-constexpr float lineCompression = 0.95f;
+// Slightly increase line spacing for size-10 Bookerly
+constexpr float lineCompression = 1.05f;
 constexpr int marginTop = 8;
 constexpr int marginRight = 10;
 constexpr int marginBottom = 22;

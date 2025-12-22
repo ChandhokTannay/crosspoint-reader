@@ -13,10 +13,12 @@ constexpr int NUM_HEADER_TAGS = sizeof(HEADER_TAGS) / sizeof(HEADER_TAGS[0]);
 const char* BLOCK_TAGS[] = {"p", "li", "div", "br"};
 constexpr int NUM_BLOCK_TAGS = sizeof(BLOCK_TAGS) / sizeof(BLOCK_TAGS[0]);
 
-const char* BOLD_TAGS[] = {"b"};
+// Treat <b> and <strong> as bold
+const char* BOLD_TAGS[] = {"b", "strong"};
 constexpr int NUM_BOLD_TAGS = sizeof(BOLD_TAGS) / sizeof(BOLD_TAGS[0]);
 
-const char* ITALIC_TAGS[] = {"i"};
+// Treat <i> and <em> as italic
+const char* ITALIC_TAGS[] = {"i", "em"};
 constexpr int NUM_ITALIC_TAGS = sizeof(ITALIC_TAGS) / sizeof(ITALIC_TAGS[0]);
 
 const char* IMAGE_TAGS[] = {"img"};

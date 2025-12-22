@@ -137,7 +137,16 @@ void onGoToReader(const std::string& initialEpubPath) {
   exitActivity();
   enterNewActivity(new ReaderActivity(renderer, inputManager, initialEpubPath, onGoHome));
 }
-void onGoToReaderHome() { onGoToReader(std::string()); }
+
+// From the home screen, prefer to resume the last-opened EPUB (if any),
+// otherwise fall back to the reader's file selection.
+void onGoToReaderHome() {
+  if (APP_STATE.openEpubPath.empty()) {
+    onGoToReader(std::string());
+  } else {
+    onGoToReader(APP_STATE.openEpubPath);
+  }
+}
 
 void onGoToFileTransfer() {
   exitActivity();
