@@ -2,6 +2,7 @@
 
 #include <GfxRenderer.h>
 #include <SD.h>
+#include <Epub.h>
 
 #include "config.h"
 
@@ -13,6 +14,10 @@ void sortFileList(std::vector<std::string>& strs) {
         begin(str1), end(str1), begin(str2), end(str2),
         [](const char& char1, const char& char2) { return tolower(char1) < tolower(char2); });
   });
+}
+
+namespace {
+constexpr unsigned long REINDEX_HOLD_MS = 1000;  // ms to hold OK to re-index
 }
 
 void FileSelectionActivity::taskTrampoline(void* param) {
@@ -48,6 +53,7 @@ void FileSelectionActivity::onEnter() {
   basepath = "/";
   loadFiles();
   selectorIndex = 0;
+  status = Status::NORMAL;
 
   // Trigger first update
   updateRequired = true;
@@ -78,18 +84,49 @@ void FileSelectionActivity::loop() {
   const bool nextPressed =
       inputManager.wasPressed(InputManager::BTN_DOWN) || inputManager.wasPressed(InputManager::BTN_RIGHT);
 
-  if (inputManager.wasPressed(InputManager::BTN_CONFIRM)) {
+  // When showing a status message, automatically return to normal after a short delay
+  if (status == Status::INDEX_DONE) {
+    if (millis() - statusStartMs > 1200) {
+      status = Status::NORMAL;
+      updateRequired = true;
+    }
+    return;
+  }
+
+  // Short-press OK: open; long-press OK: re-index selected EPUB
+  if (inputManager.wasReleased(InputManager::BTN_CONFIRM)) {
     if (files.empty()) {
       return;
     }
 
     if (basepath.back() != '/') basepath += "/";
-    if (files[selectorIndex].back() == '/') {
-      basepath += files[selectorIndex].substr(0, files[selectorIndex].length() - 1);
+    const auto& selected = files[selectorIndex];
+    const bool isDirectory = !selected.empty() && selected.back() == '/';
+
+    if (inputManager.getHeldTime() > REINDEX_HOLD_MS && !isDirectory) {
+      // Re-index: clear cached data for this EPUB
+      const std::string fullPath = basepath + selected;
+
+      status = Status::INDEXING;
+      statusStartMs = millis();
+      updateRequired = true;  // trigger "Indexing..." screen
+
+      Epub epub(fullPath, "/.crosspoint");
+      epub.clearCache();
+
+      status = Status::INDEX_DONE;
+      statusStartMs = millis();
+      updateRequired = true;  // trigger "Indexing complete" screen
+      return;
+    }
+
+    // Normal open behavior
+    if (isDirectory) {
+      basepath += selected.substr(0, selected.length() - 1);
       loadFiles();
       updateRequired = true;
     } else {
-      onSelect(basepath + files[selectorIndex]);
+      onSelect(basepath + selected);
     }
   } else if (inputManager.wasPressed(InputManager::BTN_BACK)) {
     if (basepath != "/") {
@@ -126,10 +163,24 @@ void FileSelectionActivity::render() const {
   renderer.clearScreen();
 
   const auto pageWidth = GfxRenderer::getScreenWidth();
+  const auto pageHeight = GfxRenderer::getScreenHeight();
   renderer.drawCenteredText(READER_FONT_ID, 10, "Tannay's Reader", true, BOLD);
 
+  // Status overlays for re-indexing
+  if (status == Status::INDEXING) {
+    renderer.drawCenteredText(READER_FONT_ID, pageHeight / 2 - 10, "Indexing...", true, BOLD);
+    renderer.displayBuffer();
+    return;
+  }
+  if (status == Status::INDEX_DONE) {
+    renderer.drawCenteredText(READER_FONT_ID, pageHeight / 2 - 10, "Indexing complete", true, BOLD);
+    renderer.displayBuffer();
+    return;
+  }
+
   // Help text
-  renderer.drawText(SMALL_FONT_ID, 20, GfxRenderer::getScreenHeight() - 30, "Press BACK for Home");
+  renderer.drawText(SMALL_FONT_ID, 20, pageHeight - 30,
+                    "BACK: Home   |   HOLD OK: Re-index");
 
   if (files.empty()) {
     renderer.drawText(UI_FONT_ID, 20, 60, "No EPUBs found");

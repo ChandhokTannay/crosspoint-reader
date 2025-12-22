@@ -59,10 +59,12 @@ void EpubReaderChapterSelectionActivity::onExit() {
 }
 
 void EpubReaderChapterSelectionActivity::loop() {
+  // Match reader view: flip left/right bottom buttons while keeping
+  // up/down behavior the same.
   const bool prevReleased =
-      inputManager.wasReleased(InputManager::BTN_UP) || inputManager.wasReleased(InputManager::BTN_LEFT);
+      inputManager.wasReleased(InputManager::BTN_UP) || inputManager.wasReleased(InputManager::BTN_RIGHT);
   const bool nextReleased =
-      inputManager.wasReleased(InputManager::BTN_DOWN) || inputManager.wasReleased(InputManager::BTN_RIGHT);
+      inputManager.wasReleased(InputManager::BTN_DOWN) || inputManager.wasReleased(InputManager::BTN_LEFT);
 
   const bool skipPage = inputManager.getHeldTime() > SKIP_PAGE_MS;
   const int pageItems = getPageItems();

@@ -4,6 +4,7 @@
 #include <freertos/task.h>
 
 #include <functional>
+#include <string>
 
 #include "../Activity.h"
 
@@ -12,21 +13,29 @@ class HomeActivity final : public Activity {
   SemaphoreHandle_t renderingMutex = nullptr;
   int selectorIndex = 0;
   bool updateRequired = false;
-  const std::function<void()> onReaderOpen;
+  const std::function<void()> onContinueReadingOpen;
+  const std::function<void()> onBrowseFilesOpen;
   const std::function<void()> onSettingsOpen;
   const std::function<void()> onFileTransferOpen;
+  const std::string currentEpubName;
 
   static void taskTrampoline(void* param);
   [[noreturn]] void displayTaskLoop();
   void render() const;
 
  public:
-  explicit HomeActivity(GfxRenderer& renderer, InputManager& inputManager, const std::function<void()>& onReaderOpen,
-                        const std::function<void()>& onSettingsOpen, const std::function<void()>& onFileTransferOpen)
+  explicit HomeActivity(GfxRenderer& renderer, InputManager& inputManager,
+                        const std::function<void()>& onContinueReadingOpen,
+                        const std::function<void()>& onBrowseFilesOpen,
+                        const std::function<void()>& onSettingsOpen,
+                        const std::function<void()>& onFileTransferOpen,
+                        const std::string& currentEpubName)
       : Activity(renderer, inputManager),
-        onReaderOpen(onReaderOpen),
+        onContinueReadingOpen(onContinueReadingOpen),
+        onBrowseFilesOpen(onBrowseFilesOpen),
         onSettingsOpen(onSettingsOpen),
-        onFileTransferOpen(onFileTransferOpen) {}
+        onFileTransferOpen(onFileTransferOpen),
+        currentEpubName(currentEpubName) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;

@@ -50,6 +50,71 @@ Activity* currentActivity;
 // from wake-from-sleep and skip the boot screen on resume.
 RTC_DATA_ATTR bool wokeFromDeepSleepFlag = false;
 
+// (Percentage progress on the home screen has been removed; helper left unused.)
+// If reintroduced in the future, consider a very lightweight SD-only implementation.
+/*
+bool getCachedReadingProgress(const std::string& epubPath, uint8_t& progressOut) {
+  if (epubPath.empty()) {
+    return false;
+  }
+
+  const std::string cacheRoot = "/.crosspoint";
+  const std::string cachePath = cacheRoot + "/epub_" + std::to_string(std::hash<std::string>{}(epubPath));
+
+  if (!SD.exists(cachePath.c_str())) {
+    return false;
+  }
+
+  // Read last-known spine index from progress.bin
+  File progressFile = SD.open((cachePath + "/progress.bin").c_str());
+  if (!progressFile) {
+    return false;
+  }
+
+  uint8_t data[4];
+  if (progressFile.read(data, 4) != 4) {
+    progressFile.close();
+    return false;
+  }
+  progressFile.close();
+
+  const uint16_t spineIndex = static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
+
+  // Read cumulative spine item sizes from spine_size.bin
+  File spineFile = SD.open((cachePath + "/spine_size.bin").c_str());
+  if (!spineFile) {
+    return false;
+  }
+
+  uint32_t cumulative = 0;
+  uint32_t prevChapterSize = 0;
+  uint32_t bookSize = 0;
+  uint8_t buf[4];
+  uint16_t index = 0;
+
+  while (spineFile.read(buf, 4) == 4) {
+    cumulative = static_cast<uint32_t>(buf[0]) | (static_cast<uint32_t>(buf[1]) << 8) |
+                 (static_cast<uint32_t>(buf[2]) << 16) | (static_cast<uint32_t>(buf[3]) << 24);
+
+    if (index == spineIndex - 1) {
+      prevChapterSize = cumulative;
+    }
+
+    bookSize = cumulative;
+    ++index;
+  }
+  spineFile.close();
+
+  if (bookSize == 0 || spineIndex >= index) {
+    return false;
+  }
+
+  const float progress = static_cast<float>(prevChapterSize) / static_cast<float>(bookSize);
+  progressOut = static_cast<uint8_t>(progress * 100.0f + 0.5f);
+  return true;
+}
+*/
+
 // Fonts
 EpdFont bookerlyFont(&bookerly_2b);
 EpdFont bookerlyBoldFont(&bookerly_bold_2b);
@@ -169,7 +234,29 @@ void onGoToSettings() {
 
 void onGoHome() {
   exitActivity();
-  enterNewActivity(new HomeActivity(renderer, inputManager, onGoToReaderHome, onGoToSettings, onGoToFileTransfer));
+
+  // Derive a display name for the currently open EPUB, if any.
+  std::string epubName;
+  if (!APP_STATE.openEpubPath.empty()) {
+    auto pos = APP_STATE.openEpubPath.find_last_of("/");
+    if (pos == std::string::npos) {
+      epubName = APP_STATE.openEpubPath;
+    } else {
+      epubName = APP_STATE.openEpubPath.substr(pos + 1);
+    }
+
+    // Strip .epub extension if present for display purposes
+    const std::string suffix = ".epub";
+    if (epubName.size() >= suffix.size() &&
+        epubName.compare(epubName.size() - suffix.size(), suffix.size(), suffix) == 0) {
+      epubName.erase(epubName.size() - suffix.size());
+    }
+  }
+
+  auto onBrowseFiles = []() { onGoToReader(std::string()); };
+
+  enterNewActivity(new HomeActivity(renderer, inputManager, onGoToReaderHome, onBrowseFiles, onGoToSettings,
+                                    onGoToFileTransfer, epubName));
 }
 
 void setup() {

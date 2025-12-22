@@ -121,10 +121,13 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  // In reader view, flip the physical left/right bottom buttons so
+  // forward/backward make sense in the current orientation, but keep
+  // up/down behavior the same.
   const bool prevReleased =
-      inputManager.wasReleased(InputManager::BTN_UP) || inputManager.wasReleased(InputManager::BTN_LEFT);
+      inputManager.wasReleased(InputManager::BTN_UP) || inputManager.wasReleased(InputManager::BTN_RIGHT);
   const bool nextReleased =
-      inputManager.wasReleased(InputManager::BTN_DOWN) || inputManager.wasReleased(InputManager::BTN_RIGHT);
+      inputManager.wasReleased(InputManager::BTN_DOWN) || inputManager.wasReleased(InputManager::BTN_LEFT);
 
   if (!prevReleased && !nextReleased) {
     return;

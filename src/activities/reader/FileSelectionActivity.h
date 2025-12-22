@@ -10,12 +10,16 @@
 #include "../Activity.h"
 
 class FileSelectionActivity final : public Activity {
+  enum class Status { NORMAL, INDEXING, INDEX_DONE };
+
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
   std::string basepath = "/";
   std::vector<std::string> files;
   int selectorIndex = 0;
   bool updateRequired = false;
+  Status status = Status::NORMAL;
+  unsigned long statusStartMs = 0;
   const std::function<void(const std::string&)> onSelect;
   const std::function<void()> onGoHome;
 
