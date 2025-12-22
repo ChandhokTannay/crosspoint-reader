@@ -15,9 +15,10 @@ constexpr unsigned long skipChapterMs = 700;
 // Slightly increase line spacing for size-10 Bookerly
 constexpr float lineCompression = 1.05f;
 constexpr int marginTop = 8;
-constexpr int marginRight = 10;
+// Extra horizontal padding so book text doesn't touch the screen edges
+constexpr int marginRight = 20;
 constexpr int marginBottom = 22;
-constexpr int marginLeft = 10;
+constexpr int marginLeft = 20;
 }  // namespace
 
 void EpubReaderActivity::taskTrampoline(void* param) {

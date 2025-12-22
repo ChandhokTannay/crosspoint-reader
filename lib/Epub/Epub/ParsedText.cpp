@@ -31,8 +31,11 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   std::vector<uint16_t> wordWidths;
   wordWidths.reserve(totalWordCount);
 
-  // add em-space at the beginning of first word in paragraph to indent
-  if (!extraParagraphSpacing) {
+  // Add an em-space at the beginning of the first word in each paragraph
+  // when "Extra Paragraph Spacing" is enabled. This gives both a first-line
+  // indent and, together with extraParagraphSpacing, additional vertical
+  // separation between paragraphs.
+  if (extraParagraphSpacing) {
     std::string& first_word = words.front();
     first_word.insert(0, "\xe2\x80\x83");
   }

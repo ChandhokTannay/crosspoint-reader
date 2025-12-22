@@ -81,7 +81,7 @@ void HomeActivity::render() const {
 
   const auto pageWidth = GfxRenderer::getScreenWidth();
   const auto pageHeight = GfxRenderer::getScreenHeight();
-  renderer.drawCenteredText(READER_FONT_ID, 10, "CrossPoint Reader", true, BOLD);
+  renderer.drawCenteredText(READER_FONT_ID, 10, "Tannay's Reader", true, BOLD);
 
   // Draw selection
   renderer.fillRect(0, 60 + selectorIndex * 30 + 2, pageWidth - 1, 30);

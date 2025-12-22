@@ -6,6 +6,7 @@
 #include <SD.h>
 #include <SPI.h>
 #include <WiFi.h>
+#include <esp_sleep.h>
 #include <builtinFonts/bookerly_2b.h>
 #include <builtinFonts/bookerly_bold_2b.h>
 #include <builtinFonts/bookerly_bold_italic_2b.h>
@@ -44,6 +45,10 @@ EInkDisplay einkDisplay(EPD_SCLK, EPD_MOSI, EPD_CS, EPD_DC, EPD_RST, EPD_BUSY);
 InputManager inputManager;
 GfxRenderer renderer(einkDisplay);
 Activity* currentActivity;
+
+// Persist a flag across deep sleep resets so we can distinguish cold boot
+// from wake-from-sleep and skip the boot screen on resume.
+RTC_DATA_ATTR bool wokeFromDeepSleepFlag = false;
 
 // Fonts
 EpdFont bookerlyFont(&bookerly_2b);
@@ -120,8 +125,12 @@ void enterDeepSleep() {
   exitActivity();
   enterNewActivity(new SleepActivity(renderer, inputManager));
 
-  Serial.printf("[%lu] [   ] Entering deep sleep.\n", millis());
+  Serial.printf("[%lu] [   ] Entering deep sleep.\\n", millis());
   delay(1000);  // Allow Serial buffer to empty and display to update
+
+  // Mark that we're intentionally entering deep sleep so setup() can
+  // distinguish a wake-from-sleep from a cold boot.
+  wokeFromDeepSleepFlag = true;
 
   // Enable Wakeup on LOW (button press)
   esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
@@ -190,15 +199,26 @@ void setup() {
 
   // Initialize display
   einkDisplay.begin();
-  Serial.printf("[%lu] [   ] Display initialized\n", millis());
+  Serial.printf("[%lu] [   ] Display initialized\\n", millis());
 
   renderer.insertFont(READER_FONT_ID, bookerlyFontFamily);
   renderer.insertFont(UI_FONT_ID, ubuntuFontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
-  Serial.printf("[%lu] [   ] Fonts setup\n", millis());
+  Serial.printf("[%lu] [   ] Fonts setup\\n", millis());
+
+  // Determine whether we're resuming from deep sleep or doing a cold boot.
+  // We rely primarily on the RTC flag set just before esp_deep_sleep_start(),
+  // which is robust across Arduino/ESP32 core versions.
+  const bool wokeFromDeepSleep = wokeFromDeepSleepFlag;
+  // Clear the flag so a subsequent cold reset doesn't look like a resume.
+  wokeFromDeepSleepFlag = false;
 
   exitActivity();
-  enterNewActivity(new BootActivity(renderer, inputManager));
+  // Only show the boot screen on cold boot; when resuming from sleep, jump
+  // straight to the last state (home or reader) without flashing the logo.
+  if (!wokeFromDeepSleep) {
+    enterNewActivity(new BootActivity(renderer, inputManager));
+  }
 
   APP_STATE.loadFromFile();
   if (APP_STATE.openEpubPath.empty()) {

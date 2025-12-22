@@ -10,7 +10,7 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 6;
+constexpr uint8_t SECTION_FILE_VERSION = 7;
 }  // namespace
 
 void Section::onPageComplete(std::unique_ptr<Page> page) {
