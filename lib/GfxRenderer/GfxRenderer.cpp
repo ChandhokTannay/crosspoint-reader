@@ -1,5 +1,6 @@
 #include "GfxRenderer.h"
 
+#include <HardwareSerial.h>
 #include <Utf8.h>
 
 void GfxRenderer::insertFont(const int fontId, EpdFontFamily font) { fontMap.insert({fontId, font}); }

@@ -1,5 +1,17 @@
 #include "FsHelpers.h"
 
+#ifdef CROSSPOINT_HOST
+
+#include <filesystem>
+
+bool FsHelpers::removeDir(const char* path) {
+  std::error_code ec;
+  std::filesystem::remove_all(path, ec);
+  return !ec;
+}
+
+#else
+
 #include <SD.h>
 
 bool FsHelpers::removeDir(const char* path) {
@@ -34,3 +46,5 @@ bool FsHelpers::removeDir(const char* path) {
 
   return SD.rmdir(path);
 }
+
+#endif

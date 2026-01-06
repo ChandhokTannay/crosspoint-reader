@@ -4,6 +4,8 @@
 #include <HardwareSerial.h>
 #include <expat.h>
 
+#include <algorithm>
+
 #include "../Page.h"
 #include "../htmlEntities.h"
 
@@ -77,7 +79,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
 
   if (matches(name, HEADER_TAGS, NUM_HEADER_TAGS)) {
     self->startNewTextBlock(TextBlock::CENTER_ALIGN);
-    self->boldUntilDepth = min(self->boldUntilDepth, self->depth);
+    self->boldUntilDepth = std::min(self->boldUntilDepth, self->depth);
   } else if (matches(name, BLOCK_TAGS, NUM_BLOCK_TAGS)) {
     if (strcmp(name, "br") == 0) {
       self->startNewTextBlock(self->currentTextBlock->getStyle());
@@ -85,9 +87,9 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->startNewTextBlock(TextBlock::JUSTIFIED);
     }
   } else if (matches(name, BOLD_TAGS, NUM_BOLD_TAGS)) {
-    self->boldUntilDepth = min(self->boldUntilDepth, self->depth);
+    self->boldUntilDepth = std::min(self->boldUntilDepth, self->depth);
   } else if (matches(name, ITALIC_TAGS, NUM_ITALIC_TAGS)) {
-    self->italicUntilDepth = min(self->italicUntilDepth, self->depth);
+    self->italicUntilDepth = std::min(self->italicUntilDepth, self->depth);
   }
 
   self->depth += 1;

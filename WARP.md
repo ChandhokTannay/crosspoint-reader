@@ -40,6 +40,28 @@ This file provides guidance to WARP (warp.dev) when working with code in this re
   pio device monitor -b 115200
   ```
 
+### Host simulator (preview rendering)
+
+A lightweight host-side simulator exists under `tools/simulator/`. It can render a single paginated chapter page to a PNG without flashing a device.
+
+- Build:
+  ```sh
+  brew install cmake
+  cmake -S tools/simulator -B tools/simulator/build
+  cmake --build tools/simulator/build -j
+  ```
+
+- Render a page:
+  ```sh
+  tools/simulator/build/crosspoint-sim /path/to/book.epub --spine 0 --page 0 --out out.png
+  open out.png
+  ```
+
+- Render in landscape (horizontal reading):
+  ```sh
+  tools/simulator/build/crosspoint-sim /path/to/book.epub --spine 0 --page 0 --landscape --out out.png
+  ```
+
 ### Lint / static analysis / formatting
 
 - Run static analysis (cppcheck via PlatformIO; see `platformio.ini` `check_tool=cppcheck`):

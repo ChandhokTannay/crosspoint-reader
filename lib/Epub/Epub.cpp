@@ -11,6 +11,16 @@
 #include "Epub/parsers/ContentOpfParser.h"
 #include "Epub/parsers/TocNcxParser.h"
 
+namespace {
+std::string getZipPath(const std::string& filepath) {
+#ifdef CROSSPOINT_HOST
+  return filepath;
+#else
+  return "/sd" + filepath;
+#endif
+}
+}  // namespace
+
 bool Epub::findContentOpfFile(std::string* contentOpfFile) const {
   const auto containerPath = "META-INF/container.xml";
   size_t containerSize;
@@ -126,7 +136,7 @@ bool Epub::parseTocNcxFile() {
 // load in the meta data for the epub file
 bool Epub::load() {
   Serial.printf("[%lu] [EBP] Loading ePub: %s\n", millis(), filepath.c_str());
-  ZipFile zip("/sd" + filepath);
+  ZipFile zip(getZipPath(filepath));
 
   std::string contentOpfFilePath;
   if (!findContentOpfFile(&contentOpfFilePath)) {
@@ -239,7 +249,7 @@ std::string normalisePath(const std::string& path) {
 }
 
 uint8_t* Epub::readItemContentsToBytes(const std::string& itemHref, size_t* size, bool trailingNullByte) const {
-  const ZipFile zip("/sd" + filepath);
+  const ZipFile zip(getZipPath(filepath));
   const std::string path = normalisePath(itemHref);
 
   const auto content = zip.readFileToMemory(path.c_str(), size, trailingNullByte);
@@ -252,14 +262,14 @@ uint8_t* Epub::readItemContentsToBytes(const std::string& itemHref, size_t* size
 }
 
 bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, const size_t chunkSize) const {
-  const ZipFile zip("/sd" + filepath);
+  const ZipFile zip(getZipPath(filepath));
   const std::string path = normalisePath(itemHref);
 
   return zip.readFileToStream(path.c_str(), out, chunkSize);
 }
 
 bool Epub::getItemSize(const std::string& itemHref, size_t* size) const {
-  const ZipFile zip("/sd" + filepath);
+  const ZipFile zip(getZipPath(filepath));
   const std::string path = normalisePath(itemHref);
 
   return zip.getInflatedFileSize(path.c_str(), size);

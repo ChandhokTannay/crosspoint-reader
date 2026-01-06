@@ -1,0 +1,3 @@
+/Users/tannaychandhok/Projects/Ognomy/crosspoint-reader/tools/simulator/build/CMakeFiles/crosspoint-sim.dir
+/Users/tannaychandhok/Projects/Ognomy/crosspoint-reader/tools/simulator/build/CMakeFiles/edit_cache.dir
+/Users/tannaychandhok/Projects/Ognomy/crosspoint-reader/tools/simulator/build/CMakeFiles/rebuild_cache.dir
