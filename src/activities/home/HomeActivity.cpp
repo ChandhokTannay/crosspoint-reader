@@ -10,10 +10,11 @@
 
 namespace {
 // 0 = book card (Continue Reading)
-// 1 = Browse files
-// 2 = File transfer
-// 3 = Settings
-constexpr int menuItemCount = 4;
+// 1 = Browse Files
+// 2 = File Transfer
+// 3 = Sync Progress
+// 4 = Settings
+constexpr int menuItemCount = 5;
 }
 
 void HomeActivity::taskTrampoline(void* param) {
@@ -62,8 +63,12 @@ void HomeActivity::loop() {
       // Explicitly browse files in the reader
       onBrowseFilesOpen();
     } else if (selectorIndex == 2) {
+      // Open Wi-Fi file transfer screen
       onFileTransferOpen();
     } else if (selectorIndex == 3) {
+      // Manually sync reading progress
+      onSyncProgress();
+    } else if (selectorIndex == 4) {
       onSettingsOpen();
     }
   } else if (prevPressed) {
@@ -215,11 +220,11 @@ void HomeActivity::render() const {
     }
   }
 
-  // --- Bottom menu tiles (indices 1-3) ---
+  // --- Bottom menu tiles (indices 1-4) ---
   const int menuTileWidth = pageWidth - 2 * margin;
   const int menuTileHeight = 50;
   const int menuSpacing = 10;
-  const int totalMenuHeight = 3 * menuTileHeight + 2 * menuSpacing;
+  const int totalMenuHeight = 4 * menuTileHeight + 3 * menuSpacing;
 
   // Primary placement: sit fairly close under the book card
   int menuStartY = bookY + bookHeight + 20;
@@ -229,10 +234,10 @@ void HomeActivity::render() const {
     menuStartY = maxMenuStartY;
   }
 
-  const char* const labels[3] = {"Browse files", "File transfer", "Settings"};
+  const char* const labels[4] = {"Browse Files", "File Transfer", "Sync Progress", "Settings"};
 
-  for (int i = 0; i < 3; ++i) {
-    const int overallIndex = i + 1;  // map to selectorIndex values 1..3
+  for (int i = 0; i < 4; ++i) {
+    const int overallIndex = i + 1;  // map to selectorIndex values 1..4
     const int tileX = margin;
     const int tileY = menuStartY + i * (menuTileHeight + menuSpacing);
     const bool selected = (selectorIndex == overallIndex);

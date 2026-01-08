@@ -15,6 +15,7 @@ class HomeActivity final : public Activity {
   bool updateRequired = false;
   const std::function<void()> onContinueReadingOpen;
   const std::function<void()> onBrowseFilesOpen;
+  const std::function<void()> onSyncProgress;
   const std::function<void()> onSettingsOpen;
   const std::function<void()> onFileTransferOpen;
   const std::string currentEpubName;
@@ -27,12 +28,14 @@ class HomeActivity final : public Activity {
   explicit HomeActivity(GfxRenderer& renderer, InputManager& inputManager,
                         const std::function<void()>& onContinueReadingOpen,
                         const std::function<void()>& onBrowseFilesOpen,
+                        const std::function<void()>& onSyncProgress,
                         const std::function<void()>& onSettingsOpen,
                         const std::function<void()>& onFileTransferOpen,
                         const std::string& currentEpubName)
       : Activity(renderer, inputManager),
         onContinueReadingOpen(onContinueReadingOpen),
         onBrowseFilesOpen(onBrowseFilesOpen),
+        onSyncProgress(onSyncProgress),
         onSettingsOpen(onSettingsOpen),
         onFileTransferOpen(onFileTransferOpen),
         currentEpubName(currentEpubName) {}

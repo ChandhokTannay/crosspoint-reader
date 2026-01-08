@@ -4,9 +4,13 @@
 #include <GfxRenderer.h>
 #include <SD.h>
 
+#include <fstream>
+
 #include "Battery.h"
 #include "CrossPointSettings.h"
+#include "CrossPointState.h"
 #include "EpubReaderChapterSelectionActivity.h"
+#include "SyncClient.h"
 #include "config.h"
 
 namespace {
@@ -19,6 +23,36 @@ constexpr int marginTop = 8;
 constexpr int marginRight = 20;
 constexpr int marginBottom = 22;
 constexpr int marginLeft = 20;
+
+// Path on the host filesystem/SD card where we store completed book paths.
+constexpr char COMPLETED_BOOKS_FILE[] = "/sd/.crosspoint/completed_books.txt";
+
+void markBookCompleted(const std::string& epubPath) {
+  // Ensure the .crosspoint directory exists on the SD card.
+  if (!SD.exists("/.crosspoint")) {
+    SD.mkdir("/.crosspoint");
+  }
+
+  // Check if this book is already recorded as completed.
+  {
+    std::ifstream in(COMPLETED_BOOKS_FILE);
+    if (in.good()) {
+      std::string line;
+      while (std::getline(in, line)) {
+        if (line == epubPath) {
+          return;  // Already marked as completed.
+        }
+      }
+    }
+  }
+
+  // Append the new completed book path.
+  std::ofstream out(COMPLETED_BOOKS_FILE, std::ios::app);
+  if (!out.good()) {
+    return;
+  }
+  out << epubPath << '\n';
+}
 }  // namespace
 
 void EpubReaderActivity::taskTrampoline(void* param) {
@@ -121,13 +155,25 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  // In reader view, flip the physical left/right bottom buttons so
-  // forward/backward make sense in the current orientation, but keep
-  // up/down behavior the same.
-  const bool prevReleased =
-      inputManager.wasReleased(InputManager::BTN_UP) || inputManager.wasReleased(InputManager::BTN_RIGHT);
-  const bool nextReleased =
-      inputManager.wasReleased(InputManager::BTN_DOWN) || inputManager.wasReleased(InputManager::BTN_LEFT);
+  // In reader view, map the physical bottom buttons so forward/backward
+  // make sense for the current orientation, but keep up/down behavior
+  // the same.
+  bool prevReleased = false;
+  bool nextReleased = false;
+
+  if (SETTINGS.landscapeReading) {
+    // In landscape, flip left/right so physical layout feels natural
+    prevReleased = inputManager.wasReleased(InputManager::BTN_UP) ||
+                   inputManager.wasReleased(InputManager::BTN_RIGHT);
+    nextReleased = inputManager.wasReleased(InputManager::BTN_DOWN) ||
+                   inputManager.wasReleased(InputManager::BTN_LEFT);
+  } else {
+    // In portrait (or any non-landscape mode), left = back, right = forward
+    prevReleased = inputManager.wasReleased(InputManager::BTN_UP) ||
+                   inputManager.wasReleased(InputManager::BTN_LEFT);
+    nextReleased = inputManager.wasReleased(InputManager::BTN_DOWN) ||
+                   inputManager.wasReleased(InputManager::BTN_RIGHT);
+  }
 
   if (!prevReleased && !nextReleased) {
     return;
@@ -219,6 +265,9 @@ void EpubReaderActivity::renderScreen() {
     renderer.clearScreen();
     renderer.drawCenteredText(READER_FONT_ID, 300, "End of book", true, BOLD);
     renderer.displayBuffer();
+
+    // Mark this book as completed so the file manager can show it as "Read".
+    markBookCompleted(epub->getPath());
     return;
   }
 
@@ -350,6 +399,11 @@ void EpubReaderActivity::renderStatusBar() const {
   // Calculate progress in book
   float sectionChapterProg = static_cast<float>(section->currentPage) / section->pageCount;
   uint8_t bookProgress = epub->calculateProgress(currentSpineIndex, sectionChapterProg);
+
+  // If progress reaches 100%, mark the book as completed so it shows as "Read".
+  if (bookProgress >= 100) {
+    markBookCompleted(epub->getPath());
+  }
 
   // Right aligned text for progress counter
   const std::string progress = std::to_string(section->currentPage + 1) + "/" + std::to_string(section->pageCount) +

@@ -13,9 +13,9 @@
 
 // Web server activity states
 enum class WebServerActivityState {
-  WIFI_SELECTION,  // WiFi selection subactivity is active
-  SERVER_RUNNING,  // Web server is running and handling requests
-  SHUTTING_DOWN    // Shutting down server and WiFi
+  WIFI_SELECTION,      // WiFi selection subactivity is active
+  SERVER_RUNNING,      // Web server is running and handling requests
+  SHUTTING_DOWN        // Shutting down server and WiFi
 };
 
 /**
@@ -50,6 +50,10 @@ class CrossPointWebServerActivity final : public Activity {
   [[noreturn]] void displayTaskLoop();
   void render() const;
   void renderServerRunning() const;
+
+  // Attempts to connect using compile-time default WiFi credentials (if provided).
+  // Returns true on success and populates connectedIP/connectedSSID.
+  bool tryConnectDefaultWifi();
 
   void onWifiSelectionComplete(bool connected);
   void startWebServer();

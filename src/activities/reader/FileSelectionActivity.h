@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "../Activity.h"
@@ -16,6 +17,12 @@ class FileSelectionActivity final : public Activity {
   SemaphoreHandle_t renderingMutex = nullptr;
   std::string basepath = "/";
   std::vector<std::string> files;
+  // For each entry in `files`, stores the number of EPUBs directly inside
+  // that directory (for series), or 0 for regular book files.
+  std::vector<int> seriesBookCounts;
+  // Set of full EPUB paths that have been completed ("Read").
+  std::unordered_set<std::string> completedBooks;
+  bool completedLoaded = false;
   int selectorIndex = 0;
   bool updateRequired = false;
   Status status = Status::NORMAL;
@@ -27,6 +34,11 @@ class FileSelectionActivity final : public Activity {
   [[noreturn]] void displayTaskLoop();
   void render() const;
   void loadFiles();
+  void loadCompletedBooks();
+  bool isBookCompleted(const std::string& fullPath) const;
+  bool isInBooksTree() const;
+  void renderListView(int pageWidth, int pageHeight) const;
+  void renderBooksGrid(int pageWidth, int pageHeight) const;
 
  public:
   explicit FileSelectionActivity(GfxRenderer& renderer, InputManager& inputManager,

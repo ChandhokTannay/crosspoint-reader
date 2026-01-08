@@ -9,10 +9,9 @@ void CrossPointWebServerActivity::taskTrampoline(void* param) {
   auto* self = static_cast<CrossPointWebServerActivity*>(param);
   self->displayTaskLoop();
 }
-
 void CrossPointWebServerActivity::onEnter() {
-  Serial.printf("[%lu] [WEBACT] ========== CrossPointWebServerActivity onEnter ==========\n", millis());
-  Serial.printf("[%lu] [WEBACT] [MEM] Free heap at onEnter: %d bytes\n", millis(), ESP.getFreeHeap());
+  Serial.printf("[%lu] [WEBACT] ========== CrossPointWebServerActivity onEnter ==========\\n", millis());
+  Serial.printf("[%lu] [WEBACT] [MEM] Free heap at onEnter: %d bytes\\n", millis(), ESP.getFreeHeap());
 
   renderingMutex = xSemaphoreCreateMutex();
 
@@ -31,14 +30,23 @@ void CrossPointWebServerActivity::onEnter() {
   );
 
   // Turn on WiFi immediately
-  Serial.printf("[%lu] [WEBACT] Turning on WiFi...\n", millis());
+  Serial.printf("[%lu] [WEBACT] Turning on WiFi...\\n", millis());
   WiFi.mode(WIFI_STA);
 
-  // Launch WiFi selection subactivity
-  Serial.printf("[%lu] [WEBACT] Launching WifiSelectionActivity...\n", millis());
-  wifiSelection.reset(new WifiSelectionActivity(renderer, inputManager,
-                                                [this](bool connected) { onWifiSelectionComplete(connected); }));
-  wifiSelection->onEnter();
+  // First, try to connect using compile-time default WiFi credentials (if provided).
+  // If that fails or no defaults are defined, fall back to the interactive WiFi selection UI.
+  bool connectedWithDefault = tryConnectDefaultWifi();
+
+  if (connectedWithDefault) {
+    Serial.printf("[%lu] [WEBACT] Connected with default WiFi, starting web server directly...\\n", millis());
+    startWebServer();
+  } else {
+    // Launch WiFi selection subactivity
+    Serial.printf("[%lu] [WEBACT] Launching WifiSelectionActivity...\\n", millis());
+    wifiSelection.reset(new WifiSelectionActivity(renderer, inputManager,
+                                                  [this](bool connected) { onWifiSelectionComplete(connected); }));
+    wifiSelection->onEnter();
+  }
 }
 
 void CrossPointWebServerActivity::onExit() {
@@ -142,11 +150,50 @@ void CrossPointWebServerActivity::startWebServer() {
 
 void CrossPointWebServerActivity::stopWebServer() {
   if (webServer && webServer->isRunning()) {
-    Serial.printf("[%lu] [WEBACT] Stopping web server...\n", millis());
+    Serial.printf("[%lu] [WEBACT] Stopping web server...\\n", millis());
     webServer->stop();
-    Serial.printf("[%lu] [WEBACT] Web server stopped\n", millis());
+    Serial.printf("[%lu] [WEBACT] Web server stopped\\n", millis());
   }
   webServer.reset();
+}
+
+bool CrossPointWebServerActivity::tryConnectDefaultWifi() {
+#if defined(DEFAULT_WIFI_SSID) && defined(DEFAULT_WIFI_PASSWORD)
+  Serial.printf("[%lu] [WEBACT] Attempting default WiFi connection to SSID '%s'...\\n", millis(), DEFAULT_WIFI_SSID);
+
+  // Ensure station mode is enabled
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);
+
+  WiFi.begin(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASSWORD);
+
+  // Keep the default attempt relatively short so the UI doesn't appear frozen
+  constexpr unsigned long CONNECTION_TIMEOUT_MS = 5000;  // 5 seconds
+  unsigned long start = millis();
+
+  while (WiFi.status() != WL_CONNECTED && (millis() - start) < CONNECTION_TIMEOUT_MS) {
+    delay(250);
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.printf("[%lu] [WEBACT] Default WiFi connection failed or timed out\\n", millis());
+    WiFi.disconnect();
+    return false;
+  }
+
+  IPAddress ip = WiFi.localIP();
+  char ipStr[16];
+  snprintf(ipStr, sizeof(ipStr), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+  connectedIP = ipStr;
+  connectedSSID = DEFAULT_WIFI_SSID;
+
+  Serial.printf("[%lu] [WEBACT] Default WiFi connected, IP: %s\\n", millis(), ipStr);
+  return true;
+#else
+  // No default WiFi configured at build time
+  return false;
+#endif
 }
 
 void CrossPointWebServerActivity::loop() {
@@ -207,13 +254,26 @@ void CrossPointWebServerActivity::displayTaskLoop() {
 }
 
 void CrossPointWebServerActivity::render() const {
-  // Only render our own UI when server is running
-  // WiFi selection handles its own rendering
-  if (state == WebServerActivityState::SERVER_RUNNING) {
-    renderer.clearScreen();
-    renderServerRunning();
-    renderer.displayBuffer();
+  // If the WiFi selection subactivity is active, it owns the display.
+  if (wifiSelection) {
+    return;
   }
+
+  renderer.clearScreen();
+
+  if (state == WebServerActivityState::SERVER_RUNNING) {
+    renderServerRunning();
+  } else {
+    // Show a simple status screen while attempting default WiFi connection
+    const auto pageHeight = GfxRenderer::getScreenHeight();
+    const auto height = renderer.getLineHeight(UI_FONT_ID);
+    const auto top = (pageHeight - height * 2) / 2;
+
+    renderer.drawCenteredText(READER_FONT_ID, top - 20, "File Transfer", true, BOLD);
+    renderer.drawCenteredText(UI_FONT_ID, top + 20, "Connecting to WiFi...", true, REGULAR);
+  }
+
+  renderer.displayBuffer();
 }
 
 void CrossPointWebServerActivity::renderServerRunning() const {
