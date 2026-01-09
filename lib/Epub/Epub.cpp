@@ -73,6 +73,10 @@ bool Epub::parseContentOpf(const std::string& contentOpfFilePath) {
     coverImageItem = opfParser.items.at(opfParser.coverItemId);
   }
 
+  if (!opfParser.thumbnail2bppPath.empty()) {
+    thumbnail2bppItem = opfParser.thumbnail2bppPath;
+  }
+
   if (!opfParser.tocNcxPath.empty()) {
     tocNcxItem = opfParser.tocNcxPath;
   }
@@ -151,6 +155,29 @@ bool Epub::load() {
   initializeSpineItemSizes();
   Serial.printf("[%lu] [EBP] Loaded ePub: %s\n", millis(), filepath.c_str());
 
+  return true;
+}
+
+bool Epub::loadMetadataOnly() {
+  Serial.printf("[%lu] [EBP] Loading ePub metadata only: %s\n", millis(), filepath.c_str());
+  ZipFile zip("/sd" + filepath);
+
+  std::string contentOpfFilePath;
+  if (!findContentOpfFile(&contentOpfFilePath)) {
+    Serial.printf("[%lu] [EBP] Could not find content.opf in zip (metadata-only)\n", millis());
+    return false;
+  }
+
+  Serial.printf("[%lu] [EBP] [meta] Found content.opf at: %s\n", millis(), contentOpfFilePath.c_str());
+
+  contentBasePath = contentOpfFilePath.substr(0, contentOpfFilePath.find_last_of('/') + 1);
+
+  if (!parseContentOpf(contentOpfFilePath)) {
+    Serial.printf("[%lu] [EBP] [meta] Could not parse content.opf\n", millis());
+    return false;
+  }
+
+  Serial.printf("[%lu] [EBP] Loaded ePub metadata only: %s\n", millis(), filepath.c_str());
   return true;
 }
 

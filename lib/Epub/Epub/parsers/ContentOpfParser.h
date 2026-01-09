@@ -29,6 +29,9 @@ class ContentOpfParser final : public Print {
   std::string title;
   std::string tocNcxPath;
   std::string coverItemId;
+  // Absolute (normalized) path to a 2bpp thumbnail stored in the EPUB, if present.
+  // This is resolved relative to the content.opf location.
+  std::string thumbnail2bppPath;
   std::map<std::string, std::string> items;
   std::vector<std::string> spineRefs;
 

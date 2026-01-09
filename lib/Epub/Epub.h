@@ -12,8 +12,10 @@ class ZipFile;
 class Epub {
   // the title read from the EPUB meta data
   std::string title;
-  // the cover image
+  // the cover image (original cover image item from manifest)
   std::string coverImageItem;
+  // Optional 2bpp thumbnail stored inside the EPUB for Crosspoint navigation.
+  std::string thumbnail2bppItem;
   // the ncx file
   std::string tocNcxItem;
   // where is the EPUBfile?
@@ -42,12 +44,17 @@ class Epub {
   ~Epub() = default;
   std::string& getBasePath() { return contentBasePath; }
   bool load();
+  // Lightweight version of load() that only parses container.xml and content.opf
+  // (title, cover, thumbnail, manifest, spine refs) and skips TOC and spine size
+  // initialization. Useful for metadata-only operations like thumbnails.
+  bool loadMetadataOnly();
   bool clearCache() const;
   void setupCacheDir() const;
   const std::string& getCachePath() const;
   const std::string& getPath() const;
   const std::string& getTitle() const;
   const std::string& getCoverImageItem() const;
+  const std::string& getThumbnail2bppItem() const { return thumbnail2bppItem; }
   uint8_t* readItemContentsToBytes(const std::string& itemHref, size_t* size = nullptr,
                                    bool trailingNullByte = false) const;
   bool readItemContentsToStream(const std::string& itemHref, Print& out, size_t chunkSize) const;

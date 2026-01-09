@@ -5,6 +5,8 @@
 #include <Epub.h>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 
 #include "config.h"
@@ -185,6 +187,7 @@ bool FileSelectionActivity::isInBooksTree() const {
 
 void FileSelectionActivity::onEnter() {
   renderingMutex = xSemaphoreCreateMutex();
+  thumbnailCacheMutex = xSemaphoreCreateMutex();
 
   basepath = "/";
   loadFiles();
@@ -200,6 +203,16 @@ void FileSelectionActivity::onEnter() {
               1,                  // Priority
               &displayTaskHandle  // Task handle
   );
+
+  // Create thumbnail request queue and worker task for async thumbnail loading.
+  thumbnailQueue = xQueueCreate(THUMBNAIL_QUEUE_LENGTH, sizeof(ThumbnailRequest));
+  if (thumbnailQueue != nullptr) {
+    xTaskCreate(&FileSelectionActivity::thumbnailTaskTrampoline, "ThumbnailLoaderTask",
+                8192,              // Stack size (increased to avoid stack overflow during EPUB parsing)
+                this,              // Parameters
+                1,                 // Priority
+                &thumbnailTaskHandle);
+  }
 }
 
 void FileSelectionActivity::onExit() {
@@ -209,10 +222,37 @@ void FileSelectionActivity::onExit() {
     vTaskDelete(displayTaskHandle);
     displayTaskHandle = nullptr;
   }
-  vSemaphoreDelete(renderingMutex);
-  renderingMutex = nullptr;
+  if (thumbnailTaskHandle) {
+    vTaskDelete(thumbnailTaskHandle);
+    thumbnailTaskHandle = nullptr;
+  }
+  if (thumbnailQueue) {
+    vQueueDelete(thumbnailQueue);
+    thumbnailQueue = nullptr;
+  }
+  if (renderingMutex) {
+    vSemaphoreDelete(renderingMutex);
+    renderingMutex = nullptr;
+  }
+  if (thumbnailCacheMutex) {
+    vSemaphoreDelete(thumbnailCacheMutex);
+    thumbnailCacheMutex = nullptr;
+  }
   files.clear();
   seriesBookCounts.clear();
+
+  // Free any cached thumbnails.
+  for (auto& entry : thumbnailCache) {
+    if (entry.data) {
+      free(entry.data);
+      entry.data = nullptr;
+      entry.size = 0;
+      entry.width = 0;
+      entry.height = 0;
+      entry.lastUsedMs = 0;
+      entry.path.clear();
+    }
+  }
 }
 
 void FileSelectionActivity::loop() {
@@ -344,6 +384,34 @@ void FileSelectionActivity::renderListView(int pageWidth, int /*pageHeight*/) co
   }
 }
 
+void FileSelectionActivity::thumbnailTaskTrampoline(void* param) {
+  auto* self = static_cast<FileSelectionActivity*>(param);
+  self->thumbnailTaskLoop();
+}
+
+[[noreturn]] void FileSelectionActivity::thumbnailTaskLoop() {
+  while (true) {
+    if (!thumbnailQueue) {
+      vTaskDelay(100 / portTICK_PERIOD_MS);
+      continue;
+    }
+
+    ThumbnailRequest req{};
+    if (xQueueReceive(thumbnailQueue, &req, portMAX_DELAY) == pdTRUE) {
+      std::string fullPath(req.path);
+      uint8_t* data = nullptr;
+      size_t size = 0;
+      uint16_t w = 0;
+      uint16_t h = 0;
+      // Warm the cache; if a thumbnail was loaded, trigger a re-render so the
+      // newly available image can be drawn without requiring user navigation.
+      if (getOrLoadThumbnail(fullPath, &data, &size, &w, &h)) {
+        updateRequired = true;
+      }
+    }
+  }
+}
+
 void FileSelectionActivity::renderBooksGrid(int pageWidth, int pageHeight) const {
   if (files.empty()) {
     return;
@@ -393,19 +461,49 @@ void FileSelectionActivity::renderBooksGrid(int pageWidth, int pageHeight) const
     // Determine if this entry is a completed book (for EPUB files only).
     bool completed = false;
     const bool isDirectoryEntry = !files[idx].empty() && files[idx].back() == '/';
+
+    std::string fullPath;
     if (!isDirectoryEntry) {
-      std::string fullPath = basepath;
+      fullPath = basepath;
       if (!fullPath.empty() && fullPath.back() != '/') {
         fullPath += '/';
       }
       fullPath += files[idx];
       completed = isBookCompleted(fullPath);
+
+      // Proactively enqueue thumbnail loads for all visible EPUBs on the
+      // current page. enqueueThumbnailRequest() will no-op if the thumbnail
+      // is already cached.
+      enqueueThumbnailRequest(fullPath);
+    }
+
+    // Try to retrieve a cached Crosspoint 2bpp thumbnail for the book.
+    uint8_t* thumbBuffer = nullptr;
+    uint16_t thumbWidth = 0;
+    uint16_t thumbHeight = 0;
+    bool hasThumbnail = false;
+
+    if (!isDirectoryEntry) {
+      hasThumbnail = getThumbnailFromCache(fullPath, &thumbBuffer, &thumbWidth, &thumbHeight);
     }
 
     if (selected) {
       renderer.fillRect(x, y, cellWidth, cellHeight);
     } else {
       renderer.drawRect(x, y, cellWidth, cellHeight);
+    }
+
+    // If we have a thumbnail for the selected book, render it in the
+    // upper part of the card before drawing any text.
+    const int paddingX = 8;
+    const int paddingY = 8;
+    if (hasThumbnail && thumbBuffer) {
+      const uint8_t* pixels = thumbBuffer + 4;
+      const int coverX = x + (cellWidth - static_cast<int>(thumbWidth)) / 2;
+      const int coverY = y + paddingY;
+      // Invert the thumbnail when the card is selected so it stays visible on
+      // the dark highlight background.
+      renderer.draw2bppImage(pixels, coverX, coverY, thumbWidth, thumbHeight, selected);
     }
 
     // For completed (but not currently selected) books, draw a light hatch overlay
@@ -446,17 +544,22 @@ void FileSelectionActivity::renderBooksGrid(int pageWidth, int pageHeight) const
       c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     }
 
+    // Choose font: smaller when a thumbnail is present so longer titles fit.
+    const int titleFontId = hasThumbnail ? SMALL_FONT_ID : UI_FONT_ID;
+
     // Word-wrap the title within the card.
-    const int paddingX = 8;
-    const int paddingY = 8;
     const int maxLineWidth = cellWidth - 2 * paddingX;
-    const int lineHeight = renderer.getLineHeight(UI_FONT_ID);
+    const int lineHeight = renderer.getLineHeight(titleFontId);
 
     const int seriesLabelLineHeight = (!files[idx].empty() && files[idx].back() == '/')
                                           ? renderer.getLineHeight(SMALL_FONT_ID)
                                           : 0;
 
     int textAreaHeight = cellHeight - 2 * paddingY;
+    if (hasThumbnail && thumbHeight > 0) {
+      // Reserve vertical space for the thumbnail at the top of the card.
+      textAreaHeight -= static_cast<int>(thumbHeight) + 4;
+    }
     if (isDirectoryEntry) {
       // Reserve vertical space at the bottom for the "X Books" label.
       textAreaHeight -= (seriesLabelLineHeight + 4);
@@ -492,7 +595,7 @@ void FileSelectionActivity::renderBooksGrid(int pageWidth, int pageHeight) const
 
     for (size_t i = 0; i < words.size(); ++i) {
       const std::string candidate = currentLine.empty() ? words[i] : currentLine + " " + words[i];
-      if (renderer.getTextWidth(UI_FONT_ID, candidate.c_str()) <= maxLineWidth || currentLine.empty()) {
+      if (renderer.getTextWidth(titleFontId, candidate.c_str()) <= maxLineWidth || currentLine.empty()) {
         currentLine = candidate;
       } else {
         lines.push_back(currentLine);
@@ -512,7 +615,7 @@ void FileSelectionActivity::renderBooksGrid(int pageWidth, int pageHeight) const
         lastLine += lines[i];
       }
       lastLine += "...";
-      while (!lastLine.empty() && renderer.getTextWidth(UI_FONT_ID, lastLine.c_str()) > maxLineWidth) {
+      while (!lastLine.empty() && renderer.getTextWidth(titleFontId, lastLine.c_str()) > maxLineWidth) {
         lastLine.pop_back();
       }
       lines.resize(static_cast<size_t>(maxLines - 1));
@@ -522,27 +625,17 @@ void FileSelectionActivity::renderBooksGrid(int pageWidth, int pageHeight) const
     }
 
     const int totalTextHeight = lineHeight * static_cast<int>(lines.size());
-    const int textAreaTop = y + paddingY;
+    const int textAreaTop = y + paddingY + (hasThumbnail && thumbHeight > 0 ? static_cast<int>(thumbHeight) + 4 : 0);
     int textY = textAreaTop + (textAreaHeight - totalTextHeight) / 2;
     if (textY < textAreaTop) {
       textY = textAreaTop;
     }
 
     for (const auto& line : lines) {
-      const int textWidth = renderer.getTextWidth(UI_FONT_ID, line.c_str());
+      const int textWidth = renderer.getTextWidth(titleFontId, line.c_str());
       const int textX = x + (cellWidth - textWidth) / 2;
-      renderer.drawText(UI_FONT_ID, textX, textY, line.c_str(), !selected);
+      renderer.drawText(titleFontId, textX, textY, line.c_str(), !selected);
       textY += lineHeight;
-    }
-
-    // If this is a completed book (EPUB file), draw a "READ" label at the bottom.
-    if (completed && !isDirectoryEntry) {
-      const char* readLabel = "READ";
-      const int readLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
-      const int readWidth = renderer.getTextWidth(SMALL_FONT_ID, readLabel);
-      const int readX = x + (cellWidth - readWidth) / 2;
-      const int readY = y + cellHeight - paddingY - readLineHeight;
-      renderer.drawText(SMALL_FONT_ID, readX, readY, readLabel, !selected);
     }
 
     // For a series directory, show "X Books" at the bottom of the card.
@@ -561,4 +654,135 @@ void FileSelectionActivity::renderBooksGrid(int pageWidth, int pageHeight) const
       }
     }
   }
+}
+
+bool FileSelectionActivity::getThumbnailFromCache(const std::string& fullPath, uint8_t** outData,
+                                                    uint16_t* outWidth, uint16_t* outHeight) const {
+  if (!outData || !outWidth || !outHeight || !thumbnailCacheMutex) {
+    return false;
+  }
+
+  bool found = false;
+  xSemaphoreTake(thumbnailCacheMutex, portMAX_DELAY);
+  for (auto& entry : thumbnailCache) {
+    if (entry.data && entry.path == fullPath) {
+      *outData = entry.data;
+      *outWidth = entry.width;
+      *outHeight = entry.height;
+      found = true;
+      break;
+    }
+  }
+  xSemaphoreGive(thumbnailCacheMutex);
+  return found;
+}
+
+void FileSelectionActivity::enqueueThumbnailRequest(const std::string& fullPath) const {
+  if (!thumbnailQueue) {
+    return;
+  }
+
+  // Avoid enqueuing if it's already cached.
+  uint8_t* dummyData = nullptr;
+  uint16_t dummyW = 0;
+  uint16_t dummyH = 0;
+  if (getThumbnailFromCache(fullPath, &dummyData, &dummyW, &dummyH)) {
+    return;
+  }
+
+  ThumbnailRequest req{};
+  strncpy(req.path, fullPath.c_str(), THUMBNAIL_MAX_PATH - 1);
+  xQueueSendToBack(thumbnailQueue, &req, 0);
+}
+
+bool FileSelectionActivity::getOrLoadThumbnail(const std::string& fullPath, uint8_t** outData, size_t* outSize,
+                                               uint16_t* outWidth, uint16_t* outHeight) const {
+  if (!outData || !outSize || !outWidth || !outHeight) {
+    return false;
+  }
+
+  const unsigned long now = millis();
+
+  // 1. Look for an existing cached entry under lock.
+  if (thumbnailCacheMutex) {
+    xSemaphoreTake(thumbnailCacheMutex, portMAX_DELAY);
+    for (auto& entry : thumbnailCache) {
+      if (entry.data && entry.path == fullPath) {
+        entry.lastUsedMs = now;
+        *outData = entry.data;
+        *outSize = entry.size;
+        *outWidth = entry.width;
+        *outHeight = entry.height;
+        xSemaphoreGive(thumbnailCacheMutex);
+        return true;
+      }
+    }
+    xSemaphoreGive(thumbnailCacheMutex);
+  }
+
+  // 2. Not cached: attempt to load from the EPUB.
+  Epub epub(fullPath, "/.crosspoint");
+  if (!epub.loadMetadataOnly()) {
+    return false;
+  }
+  const std::string& thumbItem = epub.getThumbnail2bppItem();
+  if (thumbItem.empty()) {
+    return false;
+  }
+
+  size_t size = 0;
+  uint8_t* buf = epub.readItemContentsToBytes(thumbItem, &size, false);
+  if (!buf || size < 4) {
+    if (buf) {
+      free(buf);
+    }
+    return false;
+  }
+
+  const uint16_t w = static_cast<uint16_t>(buf[0] | (buf[1] << 8));
+  const uint16_t h = static_cast<uint16_t>(buf[2] | (buf[3] << 8));
+  if (w == 0 || h == 0) {
+    free(buf);
+    return false;
+  }
+
+  // 3. Choose a cache slot (empty or least-recently-used) and store.
+  if (thumbnailCacheMutex) {
+    xSemaphoreTake(thumbnailCacheMutex, portMAX_DELAY);
+
+    ThumbnailCacheEntry* target = nullptr;
+    for (auto& entry : thumbnailCache) {
+      if (!entry.data) {
+        target = &entry;
+        break;
+      }
+    }
+    if (!target) {
+      // Evict the least-recently-used entry.
+      target = &thumbnailCache[0];
+      for (auto& entry : thumbnailCache) {
+        if (entry.lastUsedMs < target->lastUsedMs) {
+          target = &entry;
+        }
+      }
+      if (target->data) {
+        free(target->data);
+      }
+    }
+
+    target->path = fullPath;
+    target->data = buf;
+    target->size = size;
+    target->width = w;
+    target->height = h;
+    target->lastUsedMs = now;
+
+    xSemaphoreGive(thumbnailCacheMutex);
+  }
+
+  *outData = buf;
+  *outSize = size;
+  *outWidth = w;
+  *outHeight = h;
+  return true;
 }

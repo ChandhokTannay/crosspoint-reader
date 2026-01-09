@@ -211,6 +211,55 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
   free(rowBytes);
 }
 
+void GfxRenderer::draw2bppImage(const uint8_t* data, const int x, const int y, const int width,
+                                const int height, const bool invert) const {
+  if (!data) {
+    return;
+  }
+
+  for (int iy = 0; iy < height; ++iy) {
+    for (int ix = 0; ix < width; ++ix) {
+      const int pixelIndex = iy * width + ix;
+      const int byteIndex = pixelIndex / 4;
+      const int shift = 6 - ((pixelIndex % 4) * 2);
+      const uint8_t val = (data[byteIndex] >> shift) & 0x3;  // 0 = black .. 3 = white
+
+      if (renderMode == BW) {
+        // In BW mode, approximate 2-bit grayscale via simple dithering patterns.
+        // val: 0 = black, 1 = dark gray, 2 = light gray, 3 = white.
+        bool ink = false;
+        if (val == 0) {
+          // Solid black
+          ink = true;
+        } else if (val == 1) {
+          // Dark gray: 50% checkerboard pattern
+          ink = ((ix + iy) & 1) == 0;
+        } else if (val == 2) {
+          // Light gray: 25% pattern
+          ink = ((ix & 1) == 0) && ((iy & 1) == 0);
+        } else {
+          ink = false;  // white
+        }
+
+        if (ink) {
+          const bool pixelOn = !invert;  // normal: black on white; invert: white on black
+          drawPixel(x + ix, y + iy, pixelOn);
+        }
+      } else if (renderMode == GRAYSCALE_MSB) {
+        // Use MSB buffer to represent light gray and dark gray.
+        if (val == 1 || val == 2) {
+          drawPixel(x + ix, y + iy, false);
+        }
+      } else if (renderMode == GRAYSCALE_LSB) {
+        // Use LSB buffer to represent dark gray only.
+        if (val == 1) {
+          drawPixel(x + ix, y + iy, false);
+        }
+      }
+    }
+  }
+}
+
 void GfxRenderer::clearScreen(const uint8_t color) const { einkDisplay.clearScreen(color); }
 
 void GfxRenderer::invertScreen() const {

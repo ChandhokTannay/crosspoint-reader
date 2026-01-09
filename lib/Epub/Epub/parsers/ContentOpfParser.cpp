@@ -5,6 +5,8 @@
 
 namespace {
 constexpr const char MEDIA_TYPE_NCX[] = "application/x-dtbncx+xml";
+// Custom media-type for Crosspoint's embedded 2bpp thumbnail.
+constexpr const char MEDIA_TYPE_CROSSPOINT_THUMBNAIL[] = "application/x-crosspoint-thumbnail";
 }
 
 bool ContentOpfParser::setup() {
@@ -134,6 +136,14 @@ void XMLCALL ContentOpfParser::startElement(void* userData, const XML_Char* name
         self->tocNcxPath = href;
       } else {
         Serial.printf("[%lu] [COF] Warning: Multiple NCX files found in manifest. Ignoring duplicate: %s\n", millis(),
+                      href.c_str());
+      }
+    } else if (mediaType == MEDIA_TYPE_CROSSPOINT_THUMBNAIL) {
+      // Keep the first discovered Crosspoint thumbnail; duplicates are ignored.
+      if (self->thumbnail2bppPath.empty()) {
+        self->thumbnail2bppPath = href;
+      } else {
+        Serial.printf("[%lu] [COF] Warning: Multiple Crosspoint thumbnails found. Ignoring duplicate: %s\n", millis(),
                       href.c_str());
       }
     }

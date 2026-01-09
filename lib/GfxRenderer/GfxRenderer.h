@@ -63,6 +63,9 @@ class GfxRenderer {
   void fillRect(int x, int y, int width, int height, bool state = true) const;
   void drawImage(const uint8_t bitmap[], int x, int y, int width, int height) const;
   void drawBitmap(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight) const;
+  // Draw a 2bpp image stored in row-major order, 4 pixels per byte (MSB first).
+  // If invert is true, black/white are flipped in BW mode (useful for selected cards).
+  void draw2bppImage(const uint8_t* data, int x, int y, int width, int height, bool invert = false) const;
 
   // Text
   int getTextWidth(int fontId, const char* text, EpdFontStyle style = REGULAR) const;
