@@ -189,7 +189,8 @@ void FileSelectionActivity::onEnter() {
   renderingMutex = xSemaphoreCreateMutex();
   thumbnailCacheMutex = xSemaphoreCreateMutex();
 
-  basepath = "/";
+  // Start browsing directly in the Books directory
+  basepath = "/Books";
   loadFiles();
   selectorIndex = 0;
   status = Status::NORMAL;
@@ -306,7 +307,11 @@ void FileSelectionActivity::loop() {
       onSelect(basepath + selected);
     }
   } else if (inputManager.wasPressed(InputManager::BTN_BACK)) {
-    if (basepath != "/") {
+    // Treat "/Books" as the root for library browsing so we don't expose
+    // other top-level filesystem entries in the file picker.
+    if (basepath == "/Books") {
+      onGoHome();
+    } else if (basepath != "/") {
       basepath = basepath.substr(0, basepath.rfind('/'));
       if (basepath.empty()) basepath = "/";
       loadFiles();

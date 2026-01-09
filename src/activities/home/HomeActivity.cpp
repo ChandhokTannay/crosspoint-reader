@@ -10,7 +10,7 @@
 
 namespace {
 // 0 = book card (Continue Reading)
-// 1 = Browse Files
+// 1 = Browse Library
 // 2 = File Transfer
 // 3 = Sync Progress
 // 4 = Settings
@@ -234,7 +234,7 @@ void HomeActivity::render() const {
     menuStartY = maxMenuStartY;
   }
 
-  const char* const labels[4] = {"Browse Files", "File Transfer", "Sync Progress", "Settings"};
+  const char* const labels[4] = {"Browse Library", "File Transfer", "Sync Progress", "Settings"};
 
   for (int i = 0; i < 4; ++i) {
     const int overallIndex = i + 1;  // map to selectorIndex values 1..4
