@@ -3,14 +3,25 @@
 #include <GfxRenderer.h>
 
 #include <vector>
+#include <cstdlib>
 
 #include "CrossPointSettings.h"
+#include "CrossPointState.h"
+#include "Epub.h"
 #include "SD.h"
 #include "config.h"
 #include "images/CrossLarge.h"
 
 void SleepActivity::onEnter() {
   renderPopup("Entering Sleep...");
+
+  // If enabled and we have a current book with a thumbnail cover, prefer that
+  if (SETTINGS.bookCoverForSleep) {
+    if (renderBookCoverSleepScreen()) {
+      return;
+    }
+  }
+
   // Check if we have a /sleep directory
   auto dir = SD.open("/sleep");
   if (dir && dir.isDirectory()) {
@@ -105,6 +116,54 @@ void SleepActivity::renderDefaultSleepScreen() const {
   }
 
   renderer.displayBuffer(EInkDisplay::HALF_REFRESH);
+}
+
+bool SleepActivity::renderBookCoverSleepScreen() const {
+  if (APP_STATE.openEpubPath.empty()) {
+    return false;
+  }
+
+  Epub epub(APP_STATE.openEpubPath, "/.crosspoint");
+  if (!epub.loadMetadataOnly()) {
+    return false;
+  }
+
+  const std::string& thumbItem = epub.getThumbnail2bppItem();
+  if (thumbItem.empty()) {
+    return false;
+  }
+
+  size_t size = 0;
+  uint8_t* buf = epub.readItemContentsToBytes(thumbItem, &size, false);
+  if (!buf || size < 4) {
+    if (buf) {
+      free(buf);
+    }
+    return false;
+  }
+
+  const uint16_t w = static_cast<uint16_t>(buf[0] | (buf[1] << 8));
+  const uint16_t h = static_cast<uint16_t>(buf[2] | (buf[3] << 8));
+  if (w == 0 || h == 0) {
+    free(buf);
+    return false;
+  }
+
+  const auto pageWidth = GfxRenderer::getScreenWidth();
+  const auto pageHeight = GfxRenderer::getScreenHeight();
+
+  // Center the thumbnail on the screen at native scale.
+  const int x = static_cast<int>(pageWidth - w) / 2;
+  const int y = static_cast<int>(pageHeight - h) / 2;
+
+  renderer.clearScreen();
+
+  const uint8_t* pixels = buf + 4;  // first 4 bytes are width/height header
+  renderer.draw2bppImage(pixels, x, y, w, h, false /* invert */);
+  renderer.displayBuffer(EInkDisplay::HALF_REFRESH);
+
+  free(buf);
+  return true;
 }
 
 void SleepActivity::renderCustomSleepScreen(const Bitmap& bitmap) const {

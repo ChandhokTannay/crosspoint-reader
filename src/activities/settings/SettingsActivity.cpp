@@ -9,6 +9,7 @@
 
 const SettingInfo SettingsActivity::settingsList[settingsCount] = {
     {"White Sleep Screen", SettingType::TOGGLE, &CrossPointSettings::whiteSleepScreen},
+    {"Book Cover for Sleep", SettingType::TOGGLE, &CrossPointSettings::bookCoverForSleep},
     {"Extra Paragraph Spacing", SettingType::TOGGLE, &CrossPointSettings::extraParagraphSpacing},
     {"Short Power Button Click", SettingType::TOGGLE, &CrossPointSettings::shortPwrBtn},
     {"Landscape Reading", SettingType::TOGGLE, &CrossPointSettings::landscapeReading},

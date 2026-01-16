@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <string>
+#include <cstdint>
 
 #include "../Activity.h"
 
@@ -19,6 +20,12 @@ class HomeActivity final : public Activity {
   const std::function<void()> onSettingsOpen;
   const std::function<void()> onFileTransferOpen;
   const std::string currentEpubName;
+
+  // Cached 2bpp thumbnail for the currently open book (if available).
+  uint8_t* currentThumbData = nullptr;  // buffer returned by Epub::readItemContentsToBytes
+  uint16_t currentThumbWidth = 0;
+  uint16_t currentThumbHeight = 0;
+  bool hasCurrentThumb = false;
 
   static void taskTrampoline(void* param);
   [[noreturn]] void displayTaskLoop();

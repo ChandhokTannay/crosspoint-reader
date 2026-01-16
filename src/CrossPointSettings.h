@@ -17,6 +17,8 @@ class CrossPointSettings {
 
   // Sleep screen settings
   uint8_t whiteSleepScreen = 0;
+  // Use current book cover as sleep image instead of SD card assets
+  uint8_t bookCoverForSleep = 0;
   // Text rendering settings
   uint8_t extraParagraphSpacing = 1;
   // Duration of the power button press

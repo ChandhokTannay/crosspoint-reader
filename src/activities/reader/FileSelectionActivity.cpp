@@ -519,13 +519,12 @@ void FileSelectionActivity::renderBooksGrid(int pageWidth, int pageHeight) const
       }
     }
 
-    // If this is a completed book, draw a small checkmark in the top-left corner of the card.
-    if (completed) {
-      const int cx = x + 6;
-      const int cy = y + 6;
-      renderer.drawLine(cx - 2, cy, cx, cy + 2);
-      renderer.drawLine(cx, cy + 2, cx + 4, cy - 2);
-    }
+    // Previously we drew a small diagonal checkmark in the top-left
+    // corner of each completed book card. That relied on diagonal
+    // GfxRenderer::drawLine calls, which are currently not supported
+    // and produced "Line drawing not supported" warnings. The
+    // vertical hatch overlay above is sufficient to indicate
+    // completion, so we omit the checkmark entirely.
 
     // Derive a display name: last path component, drop trailing slash, strip .epub, and uppercase.
     std::string name = files[idx];

@@ -11,5 +11,6 @@ class SleepActivity final : public Activity {
  private:
   void renderDefaultSleepScreen() const;
   void renderCustomSleepScreen(const Bitmap& bitmap) const;
+  bool renderBookCoverSleepScreen() const;
   void renderPopup(const char* message) const;
 };
