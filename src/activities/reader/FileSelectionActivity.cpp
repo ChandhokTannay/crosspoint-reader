@@ -740,33 +740,99 @@ bool FileSelectionActivity::getOrLoadThumbnail(const std::string& fullPath, uint
     xSemaphoreGive(thumbnailCacheMutex);
   }
 
-  // 2. Not cached: attempt to load from the EPUB.
+  // We'll try to populate a buffer (buf/size/w/h) either from a precomputed
+  // thumbnail file on the SD card, or by extracting it from the EPUB as a
+  // fallback. Both paths converge on the same in-memory cache insert logic.
+  uint8_t* buf = nullptr;
+  size_t size = 0;
+  uint16_t w = 0;
+  uint16_t h = 0;
+
+  // 2. Derive the per-book thumbnail cache file path and try to load it from SD.
+  //    This avoids re-opening the EPUB and parsing content.opf on every
+  //    thumbnail cache miss.
   Epub epub(fullPath, "/.crosspoint");
-  if (!epub.loadMetadataOnly()) {
-    return false;
-  }
-  const std::string& thumbItem = epub.getThumbnail2bppItem();
-  if (thumbItem.empty()) {
-    return false;
+  const std::string thumbCacheFile = epub.getCachePath() + "/thumb_2bpp.bin";
+
+  if (SD.exists(thumbCacheFile.c_str())) {
+    File f = SD.open(thumbCacheFile.c_str(), FILE_READ);
+    if (f) {
+      const size_t fileSize = f.size();
+      if (fileSize >= 4) {
+        uint8_t* fileBuf = static_cast<uint8_t*>(malloc(fileSize));
+        if (fileBuf) {
+          const size_t bytesRead = f.read(fileBuf, fileSize);
+          if (bytesRead == fileSize) {
+            const uint16_t fw = static_cast<uint16_t>(fileBuf[0] | (fileBuf[1] << 8));
+            const uint16_t fh = static_cast<uint16_t>(fileBuf[2] | (fileBuf[3] << 8));
+            if (fw != 0 && fh != 0) {
+              buf = fileBuf;
+              size = fileSize;
+              w = fw;
+              h = fh;
+            } else {
+              free(fileBuf);
+            }
+          } else {
+            free(fileBuf);
+          }
+        }
+      }
+      f.close();
+    }
   }
 
-  size_t size = 0;
-  uint8_t* buf = epub.readItemContentsToBytes(thumbItem, &size, false);
-  if (!buf || size < 4) {
+  // 3. If we don't have a valid precomputed thumbnail, fall back to reading it
+  //    from the EPUB and persist the result to the SD card for next time.
+  if (!buf) {
+    if (!epub.loadMetadataOnly()) {
+      return false;
+    }
+    const std::string& thumbItem = epub.getThumbnail2bppItem();
+    if (thumbItem.empty()) {
+      return false;
+    }
+
+    size_t epubSize = 0;
+    uint8_t* epubBuf = epub.readItemContentsToBytes(thumbItem, &epubSize, false);
+    if (!epubBuf || epubSize < 4) {
+      if (epubBuf) {
+        free(epubBuf);
+      }
+      return false;
+    }
+
+    const uint16_t ew = static_cast<uint16_t>(epubBuf[0] | (epubBuf[1] << 8));
+    const uint16_t eh = static_cast<uint16_t>(epubBuf[2] | (epubBuf[3] << 8));
+    if (ew == 0 || eh == 0) {
+      free(epubBuf);
+      return false;
+    }
+
+    // Ensure the cache directory exists and write the thumbnail blob to disk so
+    // subsequent loads can skip EPUB parsing entirely.
+    epub.setupCacheDir();
+    File outFile = SD.open(thumbCacheFile.c_str(), FILE_WRITE);
+    if (outFile) {
+      outFile.write(epubBuf, epubSize);
+      outFile.close();
+    }
+
+    buf = epubBuf;
+    size = epubSize;
+    w = ew;
+    h = eh;
+  }
+
+  if (!buf || size < 4 || w == 0 || h == 0) {
     if (buf) {
       free(buf);
     }
     return false;
   }
 
-  const uint16_t w = static_cast<uint16_t>(buf[0] | (buf[1] << 8));
-  const uint16_t h = static_cast<uint16_t>(buf[2] | (buf[3] << 8));
-  if (w == 0 || h == 0) {
-    free(buf);
-    return false;
-  }
-
-  // 3. Choose a cache slot (empty or least-recently-used) and store.
+  // 4. Choose a cache slot (empty or least-recently-used) and store the
+  //    thumbnail in the in-memory LRU cache.
   if (thumbnailCacheMutex) {
     xSemaphoreTake(thumbnailCacheMutex, portMAX_DELAY);
 
