@@ -5,8 +5,11 @@
 
 #include <vector>
 #include <cctype>
+#include <cstdlib>
 
 #include "config.h"
+#include "CrossPointState.h"
+#include "Epub.h"
 
 namespace {
 // 0 = book card (Continue Reading)
@@ -15,6 +18,53 @@ namespace {
 // 3 = Sync Progress
 // 4 = Settings
 constexpr int menuItemCount = 5;
+
+// Lightweight 2x scaler for 2bpp thumbnails used on the home screen card.
+// Avoids extra allocations by drawing directly to the renderer at 2x size.
+void draw2bppImageScale2(GfxRenderer& renderer, const uint8_t* data, int x, int y, int width, int height,
+                         bool invert) {
+  if (!data) {
+    return;
+  }
+
+  for (int iy = 0; iy < height; ++iy) {
+    for (int ix = 0; ix < width; ++ix) {
+      const int pixelIndex = iy * width + ix;
+      const int byteIndex = pixelIndex / 4;
+      const int shift = 6 - ((pixelIndex % 4) * 2);
+      const uint8_t val = (data[byteIndex] >> shift) & 0x3;  // 0 = black .. 3 = white
+
+      // Mirror the BW-mode behavior from GfxRenderer::draw2bppImage for consistency.
+      bool ink = false;
+      if (val == 0) {
+        // Solid black
+        ink = true;
+      } else if (val == 1) {
+        // Dark gray: 50% checkerboard pattern
+        ink = ((ix + iy) & 1) == 0;
+      } else if (val == 2) {
+        // Light gray: 25% pattern
+        ink = ((ix & 1) == 0) && ((iy & 1) == 0);
+      } else {
+        ink = false;  // white
+      }
+
+      if (!ink) {
+        continue;
+      }
+
+      const bool pixelOn = !invert;  // normal: black on white; invert: white on black
+      const int dstX = x + ix * 2;
+      const int dstY = y + iy * 2;
+
+      // Draw a 2x2 block for each source pixel.
+      renderer.drawPixel(dstX, dstY, pixelOn);
+      renderer.drawPixel(dstX + 1, dstY, pixelOn);
+      renderer.drawPixel(dstX, dstY + 1, pixelOn);
+      renderer.drawPixel(dstX + 1, dstY + 1, pixelOn);
+    }
+  }
+}
 }
 
 void HomeActivity::taskTrampoline(void* param) {
@@ -26,6 +76,36 @@ void HomeActivity::onEnter() {
   renderingMutex = xSemaphoreCreateMutex();
 
   selectorIndex = 0;
+
+  // Preload thumbnail for the currently open EPUB, if any.
+  hasCurrentThumb = false;
+  currentThumbData = nullptr;
+  currentThumbWidth = currentThumbHeight = 0;
+
+  if (!APP_STATE.openEpubPath.empty()) {
+    Epub epub(APP_STATE.openEpubPath, "/.crosspoint");
+    if (epub.loadMetadataOnly()) {
+      const std::string& thumbItem = epub.getThumbnail2bppItem();
+      if (!thumbItem.empty()) {
+        size_t size = 0;
+        uint8_t* buf = epub.readItemContentsToBytes(thumbItem, &size, false);
+        if (buf && size >= 4) {
+          const uint16_t w = static_cast<uint16_t>(buf[0] | (buf[1] << 8));
+          const uint16_t h = static_cast<uint16_t>(buf[2] | (buf[3] << 8));
+          if (w > 0 && h > 0) {
+            currentThumbData = buf;
+            currentThumbWidth = w;
+            currentThumbHeight = h;
+            hasCurrentThumb = true;
+          } else {
+            free(buf);
+          }
+        } else if (buf) {
+          free(buf);
+        }
+      }
+    }
+  }
 
   // Trigger first update
   updateRequired = true;
@@ -45,6 +125,15 @@ void HomeActivity::onExit() {
     vTaskDelete(displayTaskHandle);
     displayTaskHandle = nullptr;
   }
+
+  // Free any cached thumbnail for the current book.
+  if (currentThumbData) {
+    free(currentThumbData);
+    currentThumbData = nullptr;
+    currentThumbWidth = currentThumbHeight = 0;
+    hasCurrentThumb = false;
+  }
+
   vSemaphoreDelete(renderingMutex);
   renderingMutex = nullptr;
 }
@@ -118,8 +207,126 @@ void HomeActivity::render() const {
       renderer.drawRect(bookX, bookY, bookWidth, bookHeight);
     }
 
-    // Book title centered inside the card, wrapped to multiple lines
-    std::string title = currentEpubName;
+    // If we have a cached 2bpp thumbnail for the current book, show it filling
+    // more of the card area (up to 2x scale) and render the title underneath.
+    if (hasCurrentThumb && currentThumbData && currentThumbWidth > 0 && currentThumbHeight > 0) {
+      constexpr int inset = 8;  // keep a small margin inside the card
+
+      int scale = 2;
+      int scaledW = static_cast<int>(currentThumbWidth) * scale;
+      int scaledH = static_cast<int>(currentThumbHeight) * scale;
+
+      // If 2x would overflow the card, fall back to 1x to avoid extra work.
+      if (scaledW > bookWidth - 2 * inset || scaledH > bookHeight - 2 * inset) {
+        scale = 1;
+        scaledW = static_cast<int>(currentThumbWidth);
+        scaledH = static_cast<int>(currentThumbHeight);
+      }
+
+      // Horizontal centering stays the same.
+      const int coverX = bookX + (bookWidth - scaledW) / 2;
+
+      // --- Title below thumbnail ---
+      std::string title = currentEpubName;
+      for (char& c : title) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+      }
+
+      // Split into words (avoid stringstream to keep this light on the MCU)
+      std::vector<std::string> words;
+      words.reserve(8);
+      size_t pos = 0;
+      while (pos < title.size()) {
+        while (pos < title.size() && title[pos] == ' ') {
+          ++pos;
+        }
+        if (pos >= title.size()) {
+          break;
+        }
+        size_t start = pos;
+        while (pos < title.size() && title[pos] != ' ') {
+          ++pos;
+        }
+        words.emplace_back(title.substr(start, pos - start));
+      }
+
+      std::vector<std::string> lines;
+      std::string currentLine;
+      const int maxLineWidth = bookWidth - 40;
+
+      for (size_t i = 0; i < words.size(); ++i) {
+        const std::string candidate = currentLine.empty() ? words[i] : currentLine + " " + words[i];
+        if (renderer.getTextWidth(READER_FONT_ID, candidate.c_str(), BOLD) <= maxLineWidth || currentLine.empty()) {
+          currentLine = candidate;
+        } else {
+          lines.push_back(currentLine);
+          currentLine = words[i];
+        }
+      }
+      if (!currentLine.empty()) {
+        lines.push_back(currentLine);
+      }
+
+      // Allow up to three lines under the image for less constrained titles.
+      const int maxLines = 3;
+      if (static_cast<int>(lines.size()) > maxLines) {
+        std::string lastLine;
+        for (size_t i = static_cast<size_t>(maxLines - 1); i < lines.size(); ++i) {
+          if (!lastLine.empty()) lastLine += " ";
+          lastLine += lines[i];
+        }
+        lastLine += "...";
+        while (!lastLine.empty() && renderer.getTextWidth(READER_FONT_ID, lastLine.c_str(), BOLD) > maxLineWidth) {
+          lastLine.pop_back();
+        }
+        lines.resize(static_cast<size_t>(maxLines - 1));
+        if (!lastLine.empty()) {
+          lines.push_back(lastLine);
+        }
+      }
+
+      const int lineHeight = renderer.getLineHeight(READER_FONT_ID);
+      const int totalTextHeight = lineHeight * static_cast<int>(lines.size());
+
+      // Lay out the cover + text as a block that sits slightly above vertical center.
+      const int topMargin = 4;
+      const int bottomMargin = 4;
+      const int spacingBetween = 8;  // gap between image and title
+      const int contentHeight = scaledH + spacingBetween + totalTextHeight;
+
+      int groupTop = bookY + (bookHeight - contentHeight) / 2;
+      // Bias upwards a bit so the thumbnail isn't dead-center.
+      groupTop -= 6;
+
+      const int minGroupTop = bookY + topMargin;
+      const int maxGroupTop = bookY + bookHeight - bottomMargin - contentHeight;
+      if (groupTop < minGroupTop) {
+        groupTop = minGroupTop;
+      }
+      if (groupTop > maxGroupTop) {
+        groupTop = maxGroupTop;
+      }
+
+      const int coverY = groupTop;
+      int titleYStart = coverY + scaledH + spacingBetween;
+
+      // Skip the first 4 bytes (w,h) as in FileSelectionActivity.
+      const uint8_t* pixels = currentThumbData + 4;
+      if (scale == 1) {
+        renderer.draw2bppImage(pixels, coverX, coverY, currentThumbWidth, currentThumbHeight, bookSelected);
+      } else {
+        draw2bppImageScale2(renderer, pixels, coverX, coverY, currentThumbWidth, currentThumbHeight, bookSelected);
+      }
+
+      for (const auto& line : lines) {
+        const int lineWidth = renderer.getTextWidth(READER_FONT_ID, line.c_str(), BOLD);
+        const int lineX = bookX + (bookWidth - lineWidth) / 2;
+        renderer.drawText(READER_FONT_ID, lineX, titleYStart, line.c_str(), !bookSelected, BOLD);
+        titleYStart += lineHeight;
+      }
+    } else {
+      // Book title centered inside the card, wrapped to multiple lines
+      std::string title = currentEpubName;
     // Convert to uppercase for display
     for (char& c : title) {
       c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
@@ -196,7 +403,7 @@ void HomeActivity::render() const {
       titleYStart += lineHeight;
     }
 
-    // Bookmark icon in the top-right corner of the card
+    // Bookmark icon in the top-right corner of the card when showing text.
     const bool iconColor = !bookSelected;  // match inverted text color
     const int bookmarkWidth = bookWidth / 8;           // slightly wider
     const int bookmarkHeight = lineHeight * 3;          // taller for stronger visual
@@ -219,6 +426,7 @@ void HomeActivity::render() const {
       renderer.fillRect(xStart, y, width, 1, !iconColor);
     }
   }
+}
 
   // --- Bottom menu tiles (indices 1-4) ---
   const int menuTileWidth = pageWidth - 2 * margin;
