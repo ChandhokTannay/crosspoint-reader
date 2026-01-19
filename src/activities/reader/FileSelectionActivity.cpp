@@ -195,6 +195,9 @@ void FileSelectionActivity::onEnter() {
   selectorIndex = 0;
   status = Status::NORMAL;
 
+  // Reset thumbnail loading state for the new library view.
+  pendingThumbnailRequests = 0;
+
   // Trigger first update
   updateRequired = true;
 
@@ -241,6 +244,7 @@ void FileSelectionActivity::onExit() {
   }
   files.clear();
   seriesBookCounts.clear();
+  pendingThumbnailRequests = 0;
 
   // Free any cached thumbnails.
   for (auto& entry : thumbnailCache) {
@@ -268,6 +272,12 @@ void FileSelectionActivity::loop() {
       status = Status::NORMAL;
       updateRequired = true;
     }
+    return;
+  }
+
+  // While thumbnails are still loading for the current page, ignore all navigation
+  // input so we don't leave the library view in a half-loaded state.
+  if (pendingThumbnailRequests > 0) {
     return;
   }
 
@@ -412,6 +422,9 @@ void FileSelectionActivity::thumbnailTaskTrampoline(void* param) {
       // newly available image can be drawn without requiring user navigation.
       if (getOrLoadThumbnail(fullPath, &data, &size, &w, &h)) {
         updateRequired = true;
+      }
+      if (pendingThumbnailRequests > 0) {
+        --pendingThumbnailRequests;
       }
     }
   }
@@ -697,7 +710,9 @@ void FileSelectionActivity::enqueueThumbnailRequest(const std::string& fullPath)
 
   ThumbnailRequest req{};
   strncpy(req.path, fullPath.c_str(), THUMBNAIL_MAX_PATH - 1);
-  xQueueSendToBack(thumbnailQueue, &req, 0);
+  if (xQueueSendToBack(thumbnailQueue, &req, 0) == pdTRUE) {
+    ++pendingThumbnailRequests;
+  }
 }
 
 bool FileSelectionActivity::getOrLoadThumbnail(const std::string& fullPath, uint8_t** outData, size_t* outSize,

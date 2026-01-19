@@ -54,6 +54,8 @@ class FileSelectionActivity final : public Activity {
   // Small in-memory cache of embedded 2bpp thumbnails keyed by full EPUB path.
   mutable std::array<ThumbnailCacheEntry, THUMBNAIL_CACHE_SIZE> thumbnailCache{};
   QueueHandle_t thumbnailQueue = nullptr;
+  // Number of thumbnail requests that have been enqueued but not yet processed.
+  mutable volatile int pendingThumbnailRequests = 0;
 
   static void taskTrampoline(void* param);
   [[noreturn]] void displayTaskLoop();
