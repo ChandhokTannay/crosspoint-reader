@@ -520,12 +520,12 @@ void FileSelectionActivity::renderBooksGrid(int pageWidth, int pageHeight) const
     }
 
     // If this is a completed book, draw a small checkmark in the top-left corner of the card.
-    if (completed) {
-      const int cx = x + 6;
-      const int cy = y + 6;
-      renderer.drawLine(cx - 2, cy, cx, cy + 2);
-      renderer.drawLine(cx, cy + 2, cx + 4, cy - 2);
-    }
+    // if (completed) {
+    //   const int cx = x + 6;
+    //   const int cy = y + 6;
+    //   renderer.drawLine(cx - 2, cy, cx, cy + 2);
+    //   renderer.drawLine(cx, cy + 2, cx + 4, cy - 2);
+    // }
 
     // Derive a display name: last path component, drop trailing slash, strip .epub, and uppercase.
     std::string name = files[idx];
