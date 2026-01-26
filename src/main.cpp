@@ -15,6 +15,8 @@
 #include <builtinFonts/ubuntu_10.h>
 #include <builtinFonts/ubuntu_bold_10.h>
 
+#include <vector>
+
 #include "Battery.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -25,6 +27,8 @@
 #include "activities/reader/ReaderActivity.h"
 #include "activities/settings/SettingsActivity.h"
 #include "activities/util/FullScreenMessageActivity.h"
+#include "activities/util/DownloadProgressActivity.h"
+#include "BookSyncClient.h"
 #include "SyncClient.h"
 #include "config.h"
 
@@ -46,6 +50,11 @@ EInkDisplay einkDisplay(EPD_SCLK, EPD_MOSI, EPD_CS, EPD_DC, EPD_RST, EPD_BUSY);
 InputManager inputManager;
 GfxRenderer renderer(einkDisplay);
 Activity* currentActivity;
+
+// Forward declarations so helpers can call these before their full
+// definitions later in the file.
+void exitActivity();
+void enterNewActivity(Activity* activity);
 
 // Persist a flag across deep sleep resets so we can distinguish cold boot
 // from wake-from-sleep and skip the boot screen on resume.
@@ -166,6 +175,195 @@ EpdFont ubuntu10Font(&ubuntu_10);
 EpdFont ubuntuBold10Font(&ubuntu_bold_10);
 EpdFontFamily ubuntuFontFamily(&ubuntu10Font, &ubuntuBold10Font);
 
+namespace {
+void showSyncStatus(const char* msg);
+
+// Helper used by the Fetch New Books flow to show a progress bar
+// while downloading multiple books.
+void showBookDownloadProgress(const std::string& label, float progress) {
+  exitActivity();
+  enterNewActivity(new DownloadProgressActivity(renderer, inputManager, label, progress));
+  // Small delay so the user can see the updated bar before the next
+  // network step; the actual download work happens after this call.
+  delay(200);
+}
+
+// List immediate child folders under the /Books directory (one level deep).
+// Hidden entries (starting with '.') are ignored.
+std::vector<std::string> listTopLevelBookFolders() {
+  std::vector<std::string> folders;
+
+  const char* booksRoot = "/Books";
+  if (!SD.exists(booksRoot)) {
+    return folders;
+  }
+
+  File root = SD.open(booksRoot);
+  if (!root) {
+    return folders;
+  }
+
+  for (File file = root.openNextFile(); file; file = root.openNextFile()) {
+    std::string name = std::string(file.name());
+    if (name.empty() || name[0] == '.') {
+      file.close();
+      continue;
+    }
+
+    if (file.isDirectory()) {
+      folders.push_back(name);
+    }
+    file.close();
+  }
+
+  root.close();
+  return folders;
+}
+
+// Simple blocking UI that lets the user choose a folder for a downloaded
+// book. Returns an empty string to keep the book in the root /Books
+// directory, or the name of a selected child folder.
+std::string promptBookFolderFor(const std::string& bookFilename) {
+  std::vector<std::string> folders = listTopLevelBookFolders();
+  if (folders.empty()) {
+    // No folders defined under /Books; nothing to choose.
+    return std::string();
+  }
+
+  // Derive a short display title from the filename (strip .epub, uppercase).
+  std::string title = bookFilename;
+  const std::string suffix = ".epub";
+  if (title.size() >= suffix.size() &&
+      title.compare(title.size() - suffix.size(), suffix.size(), suffix) == 0) {
+    title.erase(title.size() - suffix.size());
+  }
+  for (char& c : title) {
+    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  }
+
+  // Build option labels: first entry keeps book in root, then each folder.
+  std::vector<std::string> options;
+  options.reserve(folders.size() + 1);
+  options.emplace_back("Root (/Books)");
+  for (const auto& f : folders) {
+    options.push_back(f);
+  }
+
+  int selectedIndex = 0;
+
+  while (true) {
+    const int screenWidth = GfxRenderer::getScreenWidth();
+    const int screenHeight = GfxRenderer::getScreenHeight();
+
+    renderer.clearScreen();
+
+    // Header
+    renderer.drawCenteredText(READER_FONT_ID, 10, "Tannay's Reader", true, BOLD);
+
+    // Prompt text
+    renderer.drawCenteredText(UI_FONT_ID, 40, "Choose folder for:", true, REGULAR);
+    renderer.drawCenteredText(UI_FONT_ID, 60, title.c_str(), true, REGULAR);
+
+    const int marginX = 20;
+    const int startY = 100;
+    const int rowHeight = renderer.getLineHeight(UI_FONT_ID) + 8;
+
+    for (size_t i = 0; i < options.size(); ++i) {
+      const bool selected = (static_cast<int>(i) == selectedIndex);
+      const int y = startY + static_cast<int>(i) * rowHeight;
+      const int boxHeight = rowHeight;
+
+      if (selected) {
+        renderer.fillRect(marginX, y - 4, screenWidth - 2 * marginX, boxHeight);
+      } else {
+        renderer.drawRect(marginX, y - 4, screenWidth - 2 * marginX, boxHeight);
+      }
+
+      renderer.drawText(UI_FONT_ID, marginX + 10, y,
+                        options[i].c_str(), !selected, REGULAR);
+    }
+
+    // Help text at the bottom.
+    renderer.drawText(SMALL_FONT_ID, marginX, screenHeight - 30,
+                      "OK: Select   Back: Root", false, REGULAR);
+
+    renderer.displayBuffer();
+
+    // Wait for a navigation or confirmation event.
+    while (true) {
+      inputManager.update();
+
+      const bool prevPressed =
+          inputManager.wasPressed(InputManager::BTN_UP) ||
+          inputManager.wasPressed(InputManager::BTN_LEFT);
+      const bool nextPressed =
+          inputManager.wasPressed(InputManager::BTN_DOWN) ||
+          inputManager.wasPressed(InputManager::BTN_RIGHT);
+
+      if (prevPressed) {
+        const int count = static_cast<int>(options.size());
+        selectedIndex = (selectedIndex + count - 1) % count;
+        break;  // redraw with new selection
+      }
+      if (nextPressed) {
+        const int count = static_cast<int>(options.size());
+        selectedIndex = (selectedIndex + 1) % count;
+        break;  // redraw with new selection
+      }
+      if (inputManager.wasPressed(InputManager::BTN_CONFIRM)) {
+        if (selectedIndex == 0) {
+          // Keep in root
+          return std::string();
+        }
+        // Map selection index back to folder name.
+        return folders[static_cast<size_t>(selectedIndex - 1)];
+      }
+      if (inputManager.wasPressed(InputManager::BTN_BACK)) {
+        // Treat BACK as "keep in root".
+        return std::string();
+      }
+
+      delay(50);
+    }
+  }
+}
+
+// After a book has been downloaded into /Books/<name>, optionally prompt
+// the user to place it into a subfolder and move the file if requested.
+void maybePromptToMoveDownloadedBook(const std::string& booksRoot, const std::string& bookName) {
+  // booksRoot is expected to be something like "/Books" (no trailing slash).
+  std::string root = booksRoot;
+  if (root.empty()) {
+    root = "/Books";
+  }
+
+  if (root.back() == '/') {
+    root.pop_back();
+  }
+
+  // If there are no folders, promptBookFolderFor() will early-exit.
+  const std::string selectedFolder = promptBookFolderFor(bookName);
+  if (selectedFolder.empty()) {
+    return;  // keep in root directory
+  }
+
+  // Build current and destination paths.
+  std::string currentPath = root + "/" + bookName;
+
+  std::string destDir = root + "/" + selectedFolder;
+  if (!SD.exists(destDir.c_str())) {
+    SD.mkdir(destDir.c_str());
+  }
+  std::string destPath = destDir + "/" + bookName;
+
+  if (!SD.rename(currentPath.c_str(), destPath.c_str())) {
+    Serial.printf("[%lu] [BKS] Failed to move %s to %s\n", millis(), currentPath.c_str(), destPath.c_str());
+  } else {
+    Serial.printf("[%lu] [BKS] Moved %s to %s\n", millis(), currentPath.c_str(), destPath.c_str());
+  }
+}
+}
+
 // Auto-sleep timeout (10 minutes of inactivity)
 constexpr unsigned long AUTO_SLEEP_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -260,8 +458,95 @@ void onGoToReaderHome() {
 }
 
 void onGoToFileTransfer() {
-  exitActivity();
-  enterNewActivity(new CrossPointWebServerActivity(renderer, inputManager, onGoHome));
+  // Repurposed as "Fetch New Books" – pull pending EPUBs from the host
+  // book_delivery_server and store them in /Books on the SD card.
+  clearLastBookSyncError();
+
+  showSyncStatus("Books: checking server...");
+
+  std::vector<PendingBook> books;
+  if (!fetchPendingBooks(books)) {
+    const char* err = getLastBookSyncError();
+    if (!err || err[0] == '\0') {
+      err = "Fetch failed";
+    }
+    std::string fullMsg = std::string("Books Error: ") + err;
+    showSyncStatus(fullMsg.c_str());
+    delay(1500);
+    onGoHome();
+    return;
+  }
+
+  if (books.empty()) {
+    showSyncStatus("No new books");
+    delay(1000);
+    onGoHome();
+    return;
+  }
+
+  const std::string booksRoot = "/Books";
+
+  const size_t totalBooks = books.size();
+  int downloaded = 0;
+  for (size_t i = 0; i < totalBooks; ++i) {
+    const auto& book = books[i];
+
+    // Show a progress bar based on how many books are completed.
+    // We show the progress *before* starting this book, so for the
+    // first book i == 0 → 0%. After the book+ack succeed, we bump to
+    // (i + 1) / total below. This makes the bar move even when there
+    // are multiple books.
+    const float beforeProgress = (totalBooks == 0) ? 0.0f : static_cast<float>(i) / static_cast<float>(totalBooks);
+    std::string label = "Downloading " + book.name + " (" + std::to_string(i + 1) + "/" +
+                        std::to_string(totalBooks) + ")";
+    showBookDownloadProgress(label, beforeProgress);
+
+    // Always download into the root /Books directory first.
+    std::string targetPath = booksRoot + "/" + book.name;
+    if (!downloadBook(book.name, targetPath)) {
+      const char* err = getLastBookSyncError();
+      if (!err || err[0] == '\0') {
+        err = "Download failed";
+      }
+      std::string fullMsg = std::string("Download failed for ") + book.name + ": " + err;
+      showSyncStatus(fullMsg.c_str());
+      delay(1500);
+      onGoHome();
+      return;
+    }
+
+    if (!ackBookDownloaded(book.name)) {
+      const char* err = getLastBookSyncError();
+      if (!err || err[0] == '\0') {
+        err = "Ack failed";
+      }
+      std::string fullMsg = std::string("Ack failed for ") + book.name + ": " + err;
+      showSyncStatus(fullMsg.c_str());
+      delay(1500);
+      onGoHome();
+      return;
+    }
+
+    // After a successful download+ack, allow the user to place the book
+    // into any top-level folder under /Books (or keep it at the root).
+    maybePromptToMoveDownloadedBook(booksRoot, book.name);
+
+    // Update the bar to reflect that this book is now fully done.
+    const float afterProgress = (totalBooks == 0)
+                                    ? 1.0f
+                                    : static_cast<float>(i + 1) / static_cast<float>(totalBooks);
+    std::string doneLabel = "Downloaded " + book.name + " (" + std::to_string(i + 1) + "/" +
+                            std::to_string(totalBooks) + ")";
+    showBookDownloadProgress(doneLabel, afterProgress);
+
+    ++downloaded;
+  }
+
+  char buf[48];
+  std::snprintf(buf, sizeof(buf), "Fetched %d new book%s", downloaded, downloaded == 1 ? "" : "s");
+  showSyncStatus(buf);
+  delay(1500);
+  onGoHome();
 }
 
 void onGoToSettings() {

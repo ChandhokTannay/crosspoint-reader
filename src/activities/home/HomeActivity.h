@@ -18,6 +18,7 @@ class HomeActivity final : public Activity {
   const std::function<void()> onBrowseFilesOpen;
   const std::function<void()> onSyncProgress;
   const std::function<void()> onSettingsOpen;
+  // Reused for the "Fetch New Books" action on the home menu.
   const std::function<void()> onFileTransferOpen;
   const std::string currentEpubName;
 

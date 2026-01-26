@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <Arduino.h>
 
 #include "config.h"
 
@@ -23,6 +24,11 @@ void sortFileList(std::vector<std::string>& strs) {
 
 namespace {
 constexpr unsigned long REINDEX_HOLD_MS = 1000;  // ms to hold OK to re-index
+
+// Sanity limits for embedded 2bpp thumbnails. These are intentionally
+// conservative and well within the device's display capabilities.
+constexpr uint16_t MAX_THUMBNAIL_WIDTH = 600;
+constexpr uint16_t MAX_THUMBNAIL_HEIGHT = 800;
 
 // Count how many EPUB files are directly inside a given series directory.
 // dirEntry is a single path component relative to basepath and typically
@@ -245,19 +251,8 @@ void FileSelectionActivity::onExit() {
   files.clear();
   seriesBookCounts.clear();
   pendingThumbnailRequests = 0;
-
-  // Free any cached thumbnails.
-  for (auto& entry : thumbnailCache) {
-    if (entry.data) {
-      free(entry.data);
-      entry.data = nullptr;
-      entry.size = 0;
-      entry.width = 0;
-      entry.height = 0;
-      entry.lastUsedMs = 0;
-      entry.path.clear();
-    }
-  }
+ 
+  clearThumbnailCache();
 }
 
 void FileSelectionActivity::loop() {
@@ -265,6 +260,8 @@ void FileSelectionActivity::loop() {
       inputManager.wasPressed(InputManager::BTN_UP) || inputManager.wasPressed(InputManager::BTN_LEFT);
   const bool nextPressed =
       inputManager.wasPressed(InputManager::BTN_DOWN) || inputManager.wasPressed(InputManager::BTN_RIGHT);
+
+  constexpr int GRID_ITEMS_PER_PAGE = 9;  // must match renderBooksGrid
 
   // When showing a status message, automatically return to normal after a short delay
   if (status == Status::INDEX_DONE) {
@@ -312,6 +309,11 @@ void FileSelectionActivity::loop() {
     if (isDirectory) {
       basepath += selected.substr(0, selected.length() - 1);
       loadFiles();
+      // When changing into a new folder, flush the in-RAM thumbnail
+      // cache so thumbnails for the new directory can be loaded
+      // without being capped by entries from the previous view.
+      clearThumbnailCache();
+      selectorIndex = 0;
       updateRequired = true;
     } else {
       onSelect(basepath + selected);
@@ -325,17 +327,33 @@ void FileSelectionActivity::loop() {
       basepath = basepath.substr(0, basepath.rfind('/'));
       if (basepath.empty()) basepath = "/";
       loadFiles();
+      clearThumbnailCache();
+      selectorIndex = 0;
       updateRequired = true;
     } else {
       // At root level, go back home
       onGoHome();
     }
   } else if (prevPressed) {
-    selectorIndex = (selectorIndex + files.size() - 1) % files.size();
-    updateRequired = true;
+    if (!files.empty()) {
+      const int oldPage = static_cast<int>(selectorIndex) / GRID_ITEMS_PER_PAGE;
+      selectorIndex = (selectorIndex + files.size() - 1) % files.size();
+      const int newPage = static_cast<int>(selectorIndex) / GRID_ITEMS_PER_PAGE;
+      if (newPage != oldPage) {
+        clearThumbnailCache();
+      }
+      updateRequired = true;
+    }
   } else if (nextPressed) {
-    selectorIndex = (selectorIndex + 1) % files.size();
-    updateRequired = true;
+    if (!files.empty()) {
+      const int oldPage = static_cast<int>(selectorIndex) / GRID_ITEMS_PER_PAGE;
+      selectorIndex = (selectorIndex + 1) % files.size();
+      const int newPage = static_cast<int>(selectorIndex) / GRID_ITEMS_PER_PAGE;
+      if (newPage != oldPage) {
+        clearThumbnailCache();
+      }
+      updateRequired = true;
+    }
   }
 }
 
@@ -366,6 +384,15 @@ void FileSelectionActivity::render() const {
   }
   if (status == Status::INDEX_DONE) {
     renderer.drawCenteredText(READER_FONT_ID, pageHeight / 2 - 10, "Indexing complete", true, BOLD);
+    renderer.displayBuffer();
+    return;
+  }
+
+  // Thumbnail loading overlay: when the grid view is in the Books tree
+  // and there are outstanding thumbnail requests, show a simple blocking
+  // message so the user knows the page is still loading.
+  if (isInBooksTree() && pendingThumbnailRequests > 0) {
+    renderer.drawCenteredText(READER_FONT_ID, pageHeight / 2 - 10, "Loading covers...", true, BOLD);
     renderer.displayBuffer();
     return;
   }
@@ -489,9 +516,9 @@ void FileSelectionActivity::renderBooksGrid(int pageWidth, int pageHeight) const
       fullPath += files[idx];
       completed = isBookCompleted(fullPath);
 
-      // Proactively enqueue thumbnail loads for all visible EPUBs on the
-      // current page. enqueueThumbnailRequest() will no-op if the thumbnail
-      // is already cached.
+      // Enqueue thumbnail loads for all EPUBs on the current page. The
+      // UI ignores navigation while pendingThumbnailRequests > 0 so we
+      // don't leave the page in a half-loaded state.
       enqueueThumbnailRequest(fullPath);
     }
 
@@ -684,8 +711,8 @@ bool FileSelectionActivity::getThumbnailFromCache(const std::string& fullPath, u
   xSemaphoreTake(thumbnailCacheMutex, portMAX_DELAY);
   for (auto& entry : thumbnailCache) {
     if (entry.data && entry.path == fullPath) {
-      *outData = entry.data;
-      *outWidth = entry.width;
+      *outData   = entry.data;
+      *outWidth  = entry.width;
       *outHeight = entry.height;
       found = true;
       break;
@@ -695,8 +722,43 @@ bool FileSelectionActivity::getThumbnailFromCache(const std::string& fullPath, u
   return found;
 }
 
+void FileSelectionActivity::clearThumbnailCache() {
+  if (thumbnailCacheMutex) {
+    xSemaphoreTake(thumbnailCacheMutex, portMAX_DELAY);
+  }
+
+  for (auto& entry : thumbnailCache) {
+    if (entry.data) {
+      free(entry.data);
+      entry.data      = nullptr;
+      entry.size      = 0;
+      entry.width     = 0;
+      entry.height    = 0;
+      entry.lastUsedMs = 0;
+      entry.path.clear();
+    }
+  }
+
+  if (thumbnailCacheMutex) {
+    xSemaphoreGive(thumbnailCacheMutex);
+  }
+
+  pendingThumbnailRequests = 0;
+  if (thumbnailQueue) {
+    xQueueReset(thumbnailQueue);
+  }
+}
+
 void FileSelectionActivity::enqueueThumbnailRequest(const std::string& fullPath) const {
   if (!thumbnailQueue) {
+    return;
+  }
+
+  // Thumbnails are optional; if heap is low, skip loading new ones to
+  // avoid stressing the allocator / ZIP parser. The reader and UI will
+  // still function with text-only cards.
+  // Allow thumbnails as long as we have a reasonable safety margin.
+  if (ESP.getFreeHeap() < 120000) {
     return;
   }
 
@@ -723,7 +785,7 @@ bool FileSelectionActivity::getOrLoadThumbnail(const std::string& fullPath, uint
 
   const unsigned long now = millis();
 
-  // 1. Look for an existing cached entry under lock.
+  // 1. Look for an existing cached entry in RAM.
   if (thumbnailCacheMutex) {
     xSemaphoreTake(thumbnailCacheMutex, portMAX_DELAY);
     for (auto& entry : thumbnailCache) {
@@ -740,33 +802,90 @@ bool FileSelectionActivity::getOrLoadThumbnail(const std::string& fullPath, uint
     xSemaphoreGive(thumbnailCacheMutex);
   }
 
-  // 2. Not cached: attempt to load from the EPUB.
+  // 2. No in-memory entry: try to load from the SD-backed thumbnail cache
+  // for this EPUB. We derive a per-book cache path using the same cache
+  // root as the rest of CrossPoint ("/.crosspoint").
   Epub epub(fullPath, "/.crosspoint");
-  if (!epub.loadMetadataOnly()) {
-    return false;
-  }
-  const std::string& thumbItem = epub.getThumbnail2bppItem();
-  if (thumbItem.empty()) {
-    return false;
+  const std::string cacheRoot = epub.getCachePath();
+  const std::string thumbCachePath = cacheRoot + "/thumb_2bpp.bin";
+
+  uint8_t* buf = nullptr;
+  size_t size = 0;
+  bool loadedFromSdCache = false;
+
+  if (SD.exists(thumbCachePath.c_str())) {
+    File f = SD.open(thumbCachePath.c_str());
+    if (f) {
+      const size_t fileSize = f.size();
+      if (fileSize >= 4) {
+        buf = static_cast<uint8_t*>(malloc(fileSize));
+        if (buf) {
+          const int n = f.read(buf, fileSize);
+          if (n == static_cast<int>(fileSize)) {
+            size = fileSize;
+            loadedFromSdCache = true;
+          } else {
+            free(buf);
+            buf = nullptr;
+          }
+        }
+      }
+      f.close();
+    }
   }
 
-  size_t size = 0;
-  uint8_t* buf = epub.readItemContentsToBytes(thumbItem, &size, false);
-  if (!buf || size < 4) {
-    if (buf) {
-      free(buf);
+  if (!loadedFromSdCache) {
+    // 3. SD cache miss: fall back to metadata-only EPUB parsing to
+    // extract the embedded 2bpp thumbnail. This path is guarded by
+    // heap/size checks in the Epub helpers to reduce crash risk and is
+    // only hit once per book (when there is no SD thumbnail yet).
+    if (!epub.loadMetadataOnly()) {
+      return false;
     }
-    return false;
+    const std::string& thumbItem = epub.getThumbnail2bppItem();
+    if (thumbItem.empty()) {
+      return false;
+    }
+
+    buf = epub.readItemContentsToBytes(thumbItem, &size, false);
+    if (!buf || size < 4) {
+      if (buf) {
+        free(buf);
+      }
+      return false;
+    }
+
+    // Persist the raw 2bpp blob so future thumbnail loads for this book
+    // never need to touch the EPUB metadata again.
+    epub.setupCacheDir();
+    File out = SD.open(thumbCachePath.c_str(), FILE_WRITE);
+    if (out) {
+      out.write(buf, size);
+      out.close();
+    }
   }
 
   const uint16_t w = static_cast<uint16_t>(buf[0] | (buf[1] << 8));
   const uint16_t h = static_cast<uint16_t>(buf[2] | (buf[3] << 8));
-  if (w == 0 || h == 0) {
+  // Basic sanity checks: dimensions must be non-zero, within reasonable
+  // bounds for the display, and the buffer must be large enough to hold a
+  // 2bpp image of that size (4 pixels per byte, plus 4-byte header).
+  if (w == 0 || h == 0 || w > MAX_THUMBNAIL_WIDTH || h > MAX_THUMBNAIL_HEIGHT) {
+    free(buf);
+    return false;
+  }
+  const size_t pixelCount = static_cast<size_t>(w) * static_cast<size_t>(h);
+  const size_t expectedPixelBytes = (pixelCount + 3) / 4;  // 4 pixels per byte
+  if (size < 4 + expectedPixelBytes) {
     free(buf);
     return false;
   }
 
-  // 3. Choose a cache slot (empty or least-recently-used) and store.
+  // 4. Choose a cache slot (empty) and store. To avoid use-after-free
+  // races between the render task and the thumbnail worker, we do not
+  // evict previously cached entries here. If the cache is full, we
+  // simply skip caching this thumbnail.
+  bool cached = false;
   if (thumbnailCacheMutex) {
     xSemaphoreTake(thumbnailCacheMutex, portMAX_DELAY);
 
@@ -777,27 +896,26 @@ bool FileSelectionActivity::getOrLoadThumbnail(const std::string& fullPath, uint
         break;
       }
     }
-    if (!target) {
-      // Evict the least-recently-used entry.
-      target = &thumbnailCache[0];
-      for (auto& entry : thumbnailCache) {
-        if (entry.lastUsedMs < target->lastUsedMs) {
-          target = &entry;
-        }
-      }
-      if (target->data) {
-        free(target->data);
-      }
+
+    if (target) {
+      target->path = fullPath;
+      target->data = buf;
+      target->size = size;
+      target->width = w;
+      target->height = h;
+      target->lastUsedMs = now;
+      cached = true;
     }
 
-    target->path = fullPath;
-    target->data = buf;
-    target->size = size;
-    target->width = w;
-    target->height = h;
-    target->lastUsedMs = now;
-
     xSemaphoreGive(thumbnailCacheMutex);
+  }
+
+  if (!cached) {
+    // Cache is full; avoid introducing a new entry that could be freed
+    // while the UI is still drawing a previous thumbnail. Just drop this
+    // thumbnail and let the grid render it as a text-only card.
+    free(buf);
+    return false;
   }
 
   *outData = buf;

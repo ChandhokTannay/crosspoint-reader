@@ -16,7 +16,9 @@ class FileSelectionActivity final : public Activity {
   enum class Status { NORMAL, INDEXING, INDEX_DONE };
 
   static constexpr size_t THUMBNAIL_MAX_PATH = 128;
-  static constexpr int THUMBNAIL_CACHE_SIZE = 6;
+  // Allow more distinct thumbnails to be cached in memory. This is
+  // bounded to avoid exhausting heap when many large covers exist.
+  static constexpr int THUMBNAIL_CACHE_SIZE = 10;
   static constexpr int THUMBNAIL_QUEUE_LENGTH = 16;  // allow enough slots for a full grid page
 
   struct ThumbnailCacheEntry {
@@ -68,12 +70,13 @@ class FileSelectionActivity final : public Activity {
   bool isInBooksTree() const;
   void renderListView(int pageWidth, int pageHeight) const;
   void renderBooksGrid(int pageWidth, int pageHeight) const;
-
-  bool getThumbnailFromCache(const std::string& fullPath, uint8_t** outData, uint16_t* outWidth,
-                             uint16_t* outHeight) const;
-  void enqueueThumbnailRequest(const std::string& fullPath) const;
-  bool getOrLoadThumbnail(const std::string& fullPath, uint8_t** outData, size_t* outSize,
-                          uint16_t* outWidth, uint16_t* outHeight) const;
+ 
+   bool getThumbnailFromCache(const std::string& fullPath, uint8_t** outData, uint16_t* outWidth,
+                              uint16_t* outHeight) const;
+   void enqueueThumbnailRequest(const std::string& fullPath) const;
+   bool getOrLoadThumbnail(const std::string& fullPath, uint8_t** outData, size_t* outSize,
+                           uint16_t* outWidth, uint16_t* outHeight) const;
+   void clearThumbnailCache();
 
  public:
   explicit FileSelectionActivity(GfxRenderer& renderer, InputManager& inputManager,

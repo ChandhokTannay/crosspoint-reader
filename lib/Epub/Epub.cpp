@@ -1,5 +1,6 @@
 #include "Epub.h"
 
+#include <Arduino.h>
 #include <HardwareSerial.h>
 #include <SD.h>
 #include <ZipFile.h>
@@ -18,6 +19,18 @@ bool Epub::findContentOpfFile(std::string* contentOpfFile) const {
   // Get file size without loading it all into heap
   if (!getItemSize(containerPath, &containerSize)) {
     Serial.printf("[%lu] [EBP] Could not find or size META-INF/container.xml\n", millis());
+    return false;
+  }
+
+  const uint32_t heapBefore = ESP.getFreeHeap();
+  // Container.xml in an EPUB should be tiny (a few KB). If it's very
+  // large or heap is already low, avoid stressing the XML stack by
+  // skipping metadata-only parsing for this book.
+  const size_t kMaxContainerSize = 16 * 1024;  // 16KB
+  if (containerSize > kMaxContainerSize || heapBefore < 80000) {
+    Serial.printf("[%lu] [EBP] Skipping container.xml parse: size=%u, heap=%u for %s\n",
+                  millis(), static_cast<unsigned>(containerSize), heapBefore,
+                  filepath.c_str());
     return false;
   }
 
@@ -51,6 +64,18 @@ bool Epub::parseContentOpf(const std::string& contentOpfFilePath) {
   size_t contentOpfSize;
   if (!getItemSize(contentOpfFilePath, &contentOpfSize)) {
     Serial.printf("[%lu] [EBP] Could not get size of content.opf\n", millis());
+    return false;
+  }
+
+  const uint32_t heapBefore = ESP.getFreeHeap();
+  // content.opf is usually modest (< 64KB). If it is abnormally large
+  // or heap is already low, skip metadata-only parsing for this book
+  // rather than risk allocator/fragmentation issues.
+  const size_t kMaxOpfSize = 64 * 1024;  // 64KB
+  if (contentOpfSize > kMaxOpfSize || heapBefore < 80000) {
+    Serial.printf("[%lu] [EBP] Skipping content.opf parse: size=%u, heap=%u for %s\n",
+                  millis(), static_cast<unsigned>(contentOpfSize), heapBefore,
+                  contentOpfFilePath.c_str());
     return false;
   }
 
@@ -159,7 +184,11 @@ bool Epub::load() {
 }
 
 bool Epub::loadMetadataOnly() {
-  Serial.printf("[%lu] [EBP] Loading ePub metadata only: %s\n", millis(), filepath.c_str());
+  const uint32_t heapBefore = ESP.getFreeHeap();
+  const uint32_t minHeapBefore = ESP.getMinFreeHeap();
+  Serial.printf("[%lu] [EBP] Loading ePub metadata only: %s (heap=%u, min=%u)\n",
+                millis(), filepath.c_str(), heapBefore, minHeapBefore);
+
   ZipFile zip("/sd" + filepath);
 
   std::string contentOpfFilePath;
@@ -177,7 +206,10 @@ bool Epub::loadMetadataOnly() {
     return false;
   }
 
-  Serial.printf("[%lu] [EBP] Loaded ePub metadata only: %s\n", millis(), filepath.c_str());
+  const uint32_t heapAfter = ESP.getFreeHeap();
+  const uint32_t minHeapAfter = ESP.getMinFreeHeap();
+  Serial.printf("[%lu] [EBP] Loaded ePub metadata only: %s (heap=%u, min=%u)\n",
+                millis(), filepath.c_str(), heapAfter, minHeapAfter);
   return true;
 }
 

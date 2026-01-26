@@ -14,10 +14,15 @@
 namespace {
 // 0 = book card (Continue Reading)
 // 1 = Browse Library
-// 2 = File Transfer
+// 2 = Fetch New Books (from host server)
 // 3 = Sync Progress
 // 4 = Settings
 constexpr int menuItemCount = 5;
+
+// Sanity limits for embedded 2bpp thumbnails shown on the home card.
+// These mirror the values used in FileSelectionActivity for library covers.
+constexpr uint16_t MAX_THUMBNAIL_WIDTH = 600;
+constexpr uint16_t MAX_THUMBNAIL_HEIGHT = 800;
 
 // Lightweight 2x scaler for 2bpp thumbnails used on the home screen card.
 // Avoids extra allocations by drawing directly to the renderer at 2x size.
@@ -92,11 +97,20 @@ void HomeActivity::onEnter() {
         if (buf && size >= 4) {
           const uint16_t w = static_cast<uint16_t>(buf[0] | (buf[1] << 8));
           const uint16_t h = static_cast<uint16_t>(buf[2] | (buf[3] << 8));
-          if (w > 0 && h > 0) {
-            currentThumbData = buf;
-            currentThumbWidth = w;
-            currentThumbHeight = h;
-            hasCurrentThumb = true;
+          // Reuse the same sanity checks as the library view: make sure the
+          // thumbnail is reasonably sized and the buffer is large enough for a
+          // 2bpp image with a 4-byte header.
+          if (w > 0 && h > 0 && w <= MAX_THUMBNAIL_WIDTH && h <= MAX_THUMBNAIL_HEIGHT) {
+            const size_t pixelCount = static_cast<size_t>(w) * static_cast<size_t>(h);
+            const size_t expectedPixelBytes = (pixelCount + 3) / 4;
+            if (size >= 4 + expectedPixelBytes) {
+              currentThumbData = buf;
+              currentThumbWidth = w;
+              currentThumbHeight = h;
+              hasCurrentThumb = true;
+            } else {
+              free(buf);
+            }
           } else {
             free(buf);
           }
@@ -152,7 +166,7 @@ void HomeActivity::loop() {
       // Explicitly browse files in the reader
       onBrowseFilesOpen();
     } else if (selectorIndex == 2) {
-      // Open Wi-Fi file transfer screen
+      // Fetch new books from the host server
       onFileTransferOpen();
     } else if (selectorIndex == 3) {
       // Manually sync reading progress
@@ -442,7 +456,7 @@ void HomeActivity::render() const {
     menuStartY = maxMenuStartY;
   }
 
-  const char* const labels[4] = {"Browse Library", "File Transfer", "Sync Progress", "Settings"};
+  const char* const labels[4] = {"Browse Library", "Fetch New Books", "Sync Progress", "Settings"};
 
   for (int i = 0; i < 4; ++i) {
     const int overallIndex = i + 1;  // map to selectorIndex values 1..4
