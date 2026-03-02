@@ -16,7 +16,8 @@ class HomeActivity final : public Activity {
   bool updateRequired = false;
   const std::function<void()> onContinueReadingOpen;
   const std::function<void()> onBrowseFilesOpen;
-  const std::function<void()> onSyncProgress;
+  // Opens the Wi-Fi web file manager (replaces the old "Sync Progress" menu item).
+  const std::function<void()> onWebFileManagerOpen;
   const std::function<void()> onSettingsOpen;
   // Reused for the "Fetch New Books" action on the home menu.
   const std::function<void()> onFileTransferOpen;
@@ -36,14 +37,14 @@ class HomeActivity final : public Activity {
   explicit HomeActivity(GfxRenderer& renderer, InputManager& inputManager,
                         const std::function<void()>& onContinueReadingOpen,
                         const std::function<void()>& onBrowseFilesOpen,
-                        const std::function<void()>& onSyncProgress,
+                        const std::function<void()>& onWebFileManagerOpen,
                         const std::function<void()>& onSettingsOpen,
                         const std::function<void()>& onFileTransferOpen,
                         const std::string& currentEpubName)
       : Activity(renderer, inputManager),
         onContinueReadingOpen(onContinueReadingOpen),
         onBrowseFilesOpen(onBrowseFilesOpen),
-        onSyncProgress(onSyncProgress),
+        onWebFileManagerOpen(onWebFileManagerOpen),
         onSettingsOpen(onSettingsOpen),
         onFileTransferOpen(onFileTransferOpen),
         currentEpubName(currentEpubName) {}

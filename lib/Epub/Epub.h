@@ -66,6 +66,8 @@ class Epub {
   int getTocItemsCount() const;
   int getSpineIndexForTocIndex(int tocIndex) const;
   int getTocIndexForSpineIndex(int spineIndex) const;
+  // Generate a readable chapter name from the spine item's filename when no TOC entry exists
+  std::string getFallbackChapterName(int spineIndex) const;
 
   size_t getBookSize() const;
   uint8_t calculateProgress(const int currentSpineIndex, const float currentSpineRead);

@@ -43,7 +43,7 @@ class CrossPointWebServer {
   std::vector<FileInfo> scanFiles(const char* path = "/");
   String formatFileSize(size_t bytes);
   bool isEpubFile(const String& filename);
-
+ 
   // Request handlers
   void handleRoot();
   void handleNotFound();
@@ -53,4 +53,5 @@ class CrossPointWebServer {
   void handleUploadPost();
   void handleCreateFolder();
   void handleDelete();
+  void handleMove();
 };

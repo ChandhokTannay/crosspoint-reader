@@ -417,6 +417,47 @@ int Epub::getTocIndexForSpineIndex(const int spineIndex) const {
   return -1;
 }
 
+std::string Epub::getFallbackChapterName(const int spineIndex) const {
+  if (spineIndex < 0 || spineIndex >= spine.size()) {
+    return "Chapter " + std::to_string(spineIndex + 1);
+  }
+
+  const std::string& href = spine.at(spineIndex).second;
+
+  // Extract filename from path
+  size_t lastSlash = href.find_last_of('/');
+  std::string filename = (lastSlash != std::string::npos) ? href.substr(lastSlash + 1) : href;
+
+  // Remove file extension
+  size_t lastDot = filename.find_last_of('.');
+  if (lastDot != std::string::npos) {
+    filename = filename.substr(0, lastDot);
+  }
+
+  // Clean up the filename: replace underscores/hyphens with spaces, capitalize
+  std::string result;
+  bool capitalizeNext = true;
+  for (char c : filename) {
+    if (c == '_' || c == '-') {
+      result += ' ';
+      capitalizeNext = true;
+    } else if (capitalizeNext && c >= 'a' && c <= 'z') {
+      result += (c - 'a' + 'A');
+      capitalizeNext = false;
+    } else {
+      result += c;
+      capitalizeNext = (c == ' ');
+    }
+  }
+
+  // If result is empty or just numbers, use generic name
+  if (result.empty()) {
+    return "Chapter " + std::to_string(spineIndex + 1);
+  }
+
+  return result;
+}
+
 size_t Epub::getBookSize() const {
   if (spine.empty()) {
     return 0;

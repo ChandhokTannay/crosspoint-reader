@@ -453,8 +453,8 @@ void EpubReaderActivity::renderStatusBar() const {
   std::string title;
   int titleWidth;
   if (tocIndex == -1) {
-    title = "Unnamed";
-    titleWidth = renderer.getTextWidth(SMALL_FONT_ID, "Unnamed");
+    title = epub->getFallbackChapterName(currentSpineIndex);
+    titleWidth = renderer.getTextWidth(SMALL_FONT_ID, title.c_str());
   } else {
     const auto tocItem = epub->getTocItem(tocIndex);
     title = tocItem.title;

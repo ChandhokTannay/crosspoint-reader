@@ -4,6 +4,7 @@
 #include <WiFi.h>
 
 #include "config.h"
+#include "BookSyncConfig.h"  // For BOOK_SYNC_SSID/BOOK_SYNC_PASSWORD used by Fetch New Books
 
 void CrossPointWebServerActivity::taskTrampoline(void* param) {
   auto* self = static_cast<CrossPointWebServerActivity*>(param);
@@ -158,18 +159,22 @@ void CrossPointWebServerActivity::stopWebServer() {
 }
 
 bool CrossPointWebServerActivity::tryConnectDefaultWifi() {
-#if defined(DEFAULT_WIFI_SSID) && defined(DEFAULT_WIFI_PASSWORD)
-  Serial.printf("[%lu] [WEBACT] Attempting default WiFi connection to SSID '%s'...\\n", millis(), DEFAULT_WIFI_SSID);
+  // Mirror the behavior of the Fetch New Books flow by using the same
+  // preset WiFi credentials from BookSyncConfig.h (BOOK_SYNC_SSID/PASSWORD).
+#if defined(BOOK_SYNC_SSID) && defined(BOOK_SYNC_PASSWORD)
+  Serial.printf("[%lu] [WEBACT] Attempting default WiFi connection to SSID '%s'...\\n", millis(), BOOK_SYNC_SSID);
 
   // Ensure station mode is enabled
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   delay(100);
 
-  WiFi.begin(DEFAULT_WIFI_SSID, DEFAULT_WIFI_PASSWORD);
+  WiFi.begin(BOOK_SYNC_SSID, BOOK_SYNC_PASSWORD);
 
-  // Keep the default attempt relatively short so the UI doesn't appear frozen
-  constexpr unsigned long CONNECTION_TIMEOUT_MS = 5000;  // 5 seconds
+  // Use a slightly longer timeout (10s), matching the book sync behavior,
+  // so the user has a good chance of connecting without immediately
+  // dropping into the WiFi selection UI.
+  constexpr unsigned long CONNECTION_TIMEOUT_MS = 10000;  // 10 seconds
   unsigned long start = millis();
 
   while (WiFi.status() != WL_CONNECTED && (millis() - start) < CONNECTION_TIMEOUT_MS) {
@@ -177,7 +182,7 @@ bool CrossPointWebServerActivity::tryConnectDefaultWifi() {
   }
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.printf("[%lu] [WEBACT] Default WiFi connection failed or timed out\\n", millis());
+    Serial.printf("[%lu] [WEBACT] Default WiFi connection (BOOK_SYNC_SSID) failed or timed out\\n", millis());
     WiFi.disconnect();
     return false;
   }
@@ -186,12 +191,12 @@ bool CrossPointWebServerActivity::tryConnectDefaultWifi() {
   char ipStr[16];
   snprintf(ipStr, sizeof(ipStr), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
   connectedIP = ipStr;
-  connectedSSID = DEFAULT_WIFI_SSID;
+  connectedSSID = BOOK_SYNC_SSID;
 
-  Serial.printf("[%lu] [WEBACT] Default WiFi connected, IP: %s\\n", millis(), ipStr);
+  Serial.printf("[%lu] [WEBACT] Default WiFi (BOOK_SYNC_SSID) connected, IP: %s\\n", millis(), ipStr);
   return true;
 #else
-  // No default WiFi configured at build time
+  // No book-sync WiFi configured at build time
   return false;
 #endif
 }

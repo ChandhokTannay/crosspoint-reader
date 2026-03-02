@@ -115,7 +115,8 @@ void EpubReaderChapterSelectionActivity::renderScreen() {
   for (int i = pageStartIndex; i < epub->getSpineItemsCount() && i < pageStartIndex + pageItems; i++) {
     const int tocIndex = epub->getTocIndexForSpineIndex(i);
     if (tocIndex == -1) {
-      renderer.drawText(UI_FONT_ID, 20, 60 + (i % pageItems) * 30, "Unnamed", i != selectorIndex);
+      const auto fallbackName = epub->getFallbackChapterName(i);
+      renderer.drawText(UI_FONT_ID, 20, 60 + (i % pageItems) * 30, fallbackName.c_str(), i != selectorIndex);
     } else {
       auto item = epub->getTocItem(tocIndex);
       renderer.drawText(UI_FONT_ID, 20 + (item.level - 1) * 15, 60 + (i % pageItems) * 30, item.title.c_str(),

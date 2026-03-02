@@ -95,6 +95,9 @@ void CrossPointWebServer::begin() {
   // Delete file/folder endpoint
   server->on("/delete", HTTP_POST, [this]() { handleDelete(); });
 
+  // Move/rename file or folder endpoint
+  server->on("/move", HTTP_POST, [this]() { handleMove(); });
+
   server->onNotFound([this]() { handleNotFound(); });
   Serial.printf("[%lu] [WEB] [MEM] Free heap after route setup: %d bytes\n", millis(), ESP.getFreeHeap());
 
@@ -163,15 +166,28 @@ void CrossPointWebServer::handleClient() {
 }
 
 void CrossPointWebServer::handleRoot() {
-  String html = HomePageHtml;
+  if (!server) {
+    Serial.printf("[%lu] [WEB] handleRoot called with null server!\n", millis());
+    return;
+  }
 
-  // Replace placeholders with actual values
-  html.replace("%VERSION%", CROSSPOINT_VERSION);
-  html.replace("%IP_ADDRESS%", WiFi.localIP().toString());
-  html.replace("%FREE_HEAP%", String(ESP.getFreeHeap()));
+  // Very small, safe homepage: just shows basic info and a link to /files.
+  String html;
+  html.reserve(1024);
+  html += "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>Tannay's Reader</title></head><body>";
+  html += "<h1>Tannay's Reader</h1>";
+  html += "<p><strong>Version:</strong> ";
+  html += CROSSPOINT_VERSION;
+  html += "</p><p><strong>IP:</strong> ";
+  html += WiFi.localIP().toString();
+  html += "</p><p><strong>Free heap:</strong> ";
+  html += String(ESP.getFreeHeap());
+  html += " bytes</p>";
+  html += "<p><a href=\"/files\">Open File Manager</a></p>";
+  html += "</body></html>";
 
   server->send(200, "text/html", html);
-  Serial.printf("[%lu] [WEB] Served root page\n", millis());
+  Serial.printf("[%lu] [WEB] Served SIMPLE root page\n", millis());
 }
 
 void CrossPointWebServer::handleNotFound() {
@@ -268,199 +284,109 @@ bool CrossPointWebServer::isEpubFile(const String& filename) {
 }
 
 void CrossPointWebServer::handleFileList() {
-  String html = FilesPageHeaderHtml;
+  // Extremely minimal file listing page, streaming directly from SD
+  // without building intermediate vectors to avoid crashes on deeper paths.
+  if (!server) {
+    Serial.printf("[%lu] [WEB] handleFileList called with null server!\n", millis());
+    return;
+  }
 
   // Get current path from query string (default to root)
   String currentPath = "/";
   if (server->hasArg("path")) {
     currentPath = server->arg("path");
-    // Ensure path starts with /
     if (!currentPath.startsWith("/")) {
       currentPath = "/" + currentPath;
     }
-    // Remove trailing slash unless it's root
     if (currentPath.length() > 1 && currentPath.endsWith("/")) {
       currentPath = currentPath.substring(0, currentPath.length() - 1);
     }
   }
 
-  // Get message from query string if present
-  if (server->hasArg("msg")) {
-    String msg = escapeHtml(server->arg("msg"));
-    String msgType = server->hasArg("type") ? escapeHtml(server->arg("type")) : "success";
-    html += "<div class=\"message " + msgType + "\">" + msg + "</div>";
+  // Open the requested directory directly from SD.
+  File dir = SD.open(currentPath.c_str());
+  if (!dir || !dir.isDirectory()) {
+    Serial.printf("[%lu] [WEB] handleFileList: not a directory or cannot open: %s\n",
+                  millis(), currentPath.c_str());
+    server->send(404, "text/plain", "Directory not found");
+    if (dir) dir.close();
+    return;
   }
 
-  // Hidden input to store current path for JavaScript
-  html += "<input type=\"hidden\" id=\"currentPath\" value=\"" + currentPath + "\">";
+  String html;
+  html.reserve(2048);
+  html += "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><title>Files</title></head><body>";
+  html += "<h1>Files at ";
+  html += escapeHtml(currentPath);
+  html += "</h1>";
 
-  // Scan files in current path first (we need counts for the header)
-  std::vector<FileInfo> files = scanFiles(currentPath.c_str());
-
-  // Count items
-  int epubCount = 0;
-  int folderCount = 0;
-  size_t totalSize = 0;
-  for (const auto& file : files) {
-    if (file.isDirectory) {
-      folderCount++;
+  // Up one level link (if not at root)
+  if (currentPath != "/") {
+    String parent = currentPath;
+    int slash = parent.lastIndexOf('/');
+    if (slash > 0) {
+      parent = parent.substring(0, slash);
     } else {
-      if (file.isEpub) epubCount++;
-      totalSize += file.size;
+      parent = "/";
     }
+    html += "<p><a href=\"/files?path=";
+    html += escapeHtml(parent);
+    html += "\">Up</a></p>";
   }
 
-  // Page header with inline breadcrumb and action buttons
-  html += "<div class=\"page-header\">";
-  html += "<div class=\"page-header-left\">";
-  html += "<h1>📁 File Manager</h1>";
+  // Begin list
+  html += "<ul>";
 
-  // Inline breadcrumb
-  html += "<div class=\"breadcrumb-inline\">";
-  html += "<span class=\"sep\">/</span>";
+  // Iterate directory entries one by one to keep memory usage low.
+  for (File file = dir.openNextFile(); file; file = dir.openNextFile()) {
+    String name = String(file.name());
+    bool isDir = file.isDirectory();
 
-  if (currentPath == "/") {
-    html += "<span class=\"current\">🏠</span>";
-  } else {
-    html += "<a href=\"/files\">🏠</a>";
-    String pathParts = currentPath.substring(1);  // Remove leading /
-    String buildPath = "";
-    int start = 0;
-    int end = pathParts.indexOf('/');
-
-    while (start < (int)pathParts.length()) {
-      String part;
-      if (end == -1) {
-        part = pathParts.substring(start);
-        buildPath += "/" + part;
-        html += "<span class=\"sep\">/</span><span class=\"current\">" + escapeHtml(part) + "</span>";
-        break;
-      } else {
-        part = pathParts.substring(start, end);
-        buildPath += "/" + part;
-        html += "<span class=\"sep\">/</span><a href=\"/files?path=" + buildPath + "\">" + escapeHtml(part) + "</a>";
-        start = end + 1;
-        end = pathParts.indexOf('/', start);
+    // Skip hidden items and the special/system ones, same as scanFiles.
+    bool shouldHide = name.startsWith(".");
+    if (!shouldHide) {
+      for (size_t i = 0; i < HIDDEN_ITEMS_COUNT; i++) {
+        if (name.equals(HIDDEN_ITEMS[i])) {
+          shouldHide = true;
+          break;
+        }
       }
     }
-  }
-  html += "</div>";
-  html += "</div>";
-
-  // Action buttons
-  html += "<div class=\"action-buttons\">";
-  html += "<button class=\"action-btn upload-action-btn\" onclick=\"openUploadModal()\">";
-  html += "📤 Upload";
-  html += "</button>";
-  html += "<button class=\"action-btn folder-action-btn\" onclick=\"openFolderModal()\">";
-  html += "📁 New Folder";
-  html += "</button>";
-  html += "</div>";
-
-  html += "</div>";  // end page-header
-
-  // Contents card with inline summary
-  html += "<div class=\"card\">";
-
-  // Contents header with inline stats
-  html += "<div class=\"contents-header\">";
-  html += "<h2 class=\"contents-title\">Contents</h2>";
-  html += "<span class=\"summary-inline\">";
-  html += String(folderCount) + " folder" + (folderCount != 1 ? "s" : "") + ", ";
-  html += String(files.size() - folderCount) + " file" + ((files.size() - folderCount) != 1 ? "s" : "") + ", ";
-  html += formatFileSize(totalSize);
-  html += "</span>";
-  html += "</div>";
-
-  if (files.empty()) {
-    html += "<div class=\"no-files\">This folder is empty</div>";
-  } else {
-    html += "<table class=\"file-table\">";
-    html += "<tr><th>Name</th><th>Type</th><th>Size</th><th class=\"actions-col\">Actions</th></tr>";
-
-    // Sort files: folders first, then epub files, then other files, alphabetically within each group
-    std::sort(files.begin(), files.end(), [](const FileInfo& a, const FileInfo& b) {
-      // Folders come first
-      if (a.isDirectory != b.isDirectory) return a.isDirectory > b.isDirectory;
-      // Then sort by epub status (epubs first among files)
-      if (!a.isDirectory && !b.isDirectory) {
-        if (a.isEpub != b.isEpub) return a.isEpub > b.isEpub;
-      }
-      // Then alphabetically
-      return a.name < b.name;
-    });
-
-    for (const auto& file : files) {
-      String rowClass;
-      String icon;
-      String badge;
-      String typeStr;
-      String sizeStr;
-
-      if (file.isDirectory) {
-        rowClass = "folder-row";
-        icon = "📁";
-        badge = "<span class=\"folder-badge\">FOLDER</span>";
-        typeStr = "Folder";
-        sizeStr = "-";
-
-        // Build the path to this folder
-        String folderPath = currentPath;
-        if (!folderPath.endsWith("/")) folderPath += "/";
-        folderPath += file.name;
-
-        html += "<tr class=\"" + rowClass + "\">";
-        html += "<td><span class=\"file-icon\">" + icon + "</span>";
-        html += "<a href=\"/files?path=" + folderPath + "\" class=\"folder-link\">" + escapeHtml(file.name) + "</a>" +
-                badge + "</td>";
-        html += "<td>" + typeStr + "</td>";
-        html += "<td>" + sizeStr + "</td>";
-        // Escape quotes for JavaScript string
-        String escapedName = file.name;
-        escapedName.replace("'", "\\'");
-        String escapedPath = folderPath;
-        escapedPath.replace("'", "\\'");
-        html += "<td class=\"actions-col\"><button class=\"delete-btn\" onclick=\"openDeleteModal('" + escapedName +
-                "', '" + escapedPath + "', true)\" title=\"Delete folder\">🗑️</button></td>";
-        html += "</tr>";
-      } else {
-        rowClass = file.isEpub ? "epub-file" : "";
-        icon = file.isEpub ? "📗" : "📄";
-        badge = file.isEpub ? "<span class=\"epub-badge\">EPUB</span>" : "";
-        String ext = file.name.substring(file.name.lastIndexOf('.') + 1);
-        ext.toUpperCase();
-        typeStr = ext;
-        sizeStr = formatFileSize(file.size);
-
-        // Build file path for delete
-        String filePath = currentPath;
-        if (!filePath.endsWith("/")) filePath += "/";
-        filePath += file.name;
-
-        html += "<tr class=\"" + rowClass + "\">";
-        html += "<td><span class=\"file-icon\">" + icon + "</span>" + escapeHtml(file.name) + badge + "</td>";
-        html += "<td>" + typeStr + "</td>";
-        html += "<td>" + sizeStr + "</td>";
-        // Escape quotes for JavaScript string
-        String escapedName = file.name;
-        escapedName.replace("'", "\\'");
-        String escapedPath = filePath;
-        escapedPath.replace("'", "\\'");
-        html += "<td class=\"actions-col\"><button class=\"delete-btn\" onclick=\"openDeleteModal('" + escapedName +
-                "', '" + escapedPath + "', false)\" title=\"Delete file\">🗑️</button></td>";
-        html += "</tr>";
-      }
+    if (shouldHide) {
+      file.close();
+      continue;
     }
 
-    html += "</table>";
+    String fullPath = currentPath;
+    if (!fullPath.endsWith("/")) fullPath += "/";
+    fullPath += name;
+
+    html += "<li>";
+    if (isDir) {
+      html += "<a href=\"/files?path=";
+      html += escapeHtml(fullPath);
+      html += "\">";
+      html += escapeHtml(name);
+      html += "/</a>";
+    } else {
+      html += escapeHtml(name);
+      html += " (";
+      html += formatFileSize(file.size());
+      html += ")";
+    }
+    html += "</li>";
+
+    file.close();
   }
 
-  html += "</div>";
+  dir.close();
 
-  html += FilesPageFooterHtml;
+  html += "</ul>";
+  html += "<p><a href=\"/\">Back to Home</a></p></body></html>";
 
   server->send(200, "text/html", html);
-  Serial.printf("[%lu] [WEB] Served file listing page for path: %s\n", millis(), currentPath.c_str());
+  Serial.printf("[%lu] [WEB] Served SIMPLE file listing page for path: %s\n",
+                millis(), currentPath.c_str());
 }
 
 // Static variables for upload handling
@@ -650,6 +576,41 @@ void CrossPointWebServer::handleCreateFolder() {
     Serial.printf("[%lu] [WEB] Failed to create folder: %s\n", millis(), folderPath.c_str());
     server->send(500, "text/plain", "Failed to create folder");
   }
+}
+
+void CrossPointWebServer::handleMove() {
+  // Move/rename a file or folder using SD.rename(from, to).
+  if (!server->hasArg("from") || !server->hasArg("to")) {
+    server->send(400, "text/plain", "Missing from/to");
+    return;
+  }
+
+  String fromPath = server->arg("from");
+  String toPath = server->arg("to");
+
+  if (!fromPath.startsWith("/")) fromPath = "/" + fromPath;
+  if (!toPath.startsWith("/")) toPath = "/" + toPath;
+
+  if (!SD.exists(fromPath.c_str())) {
+    server->send(404, "text/plain", "Source not found");
+    return;
+  }
+
+  // Basic safety: don't allow renaming root.
+  if (fromPath == "/") {
+    server->send(400, "text/plain", "Cannot move root");
+    return;
+  }
+
+  bool ok = SD.rename(fromPath.c_str(), toPath.c_str());
+  if (!ok) {
+    Serial.printf("[%lu] [WEB] Move failed: %s -> %s\n", millis(), fromPath.c_str(), toPath.c_str());
+    server->send(500, "text/plain", "Move failed");
+    return;
+  }
+
+  Serial.printf("[%lu] [WEB] Move succeeded: %s -> %s\n", millis(), fromPath.c_str(), toPath.c_str());
+  server->send(200, "text/plain", "OK");
 }
 
 void CrossPointWebServer::handleDelete() {

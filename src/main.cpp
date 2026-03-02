@@ -442,6 +442,7 @@ void enterDeepSleep() {
 }
 
 void onGoHome();
+void onGoToWebFileManager();
 void onGoToReader(const std::string& initialEpubPath) {
   exitActivity();
   enterNewActivity(new ReaderActivity(renderer, inputManager, initialEpubPath, onGoHome));
@@ -562,6 +563,9 @@ void showSyncStatus(const char* msg) {
 }
 
 void onSyncProgress() {
+  // NOTE: Manual progress sync has been superseded by the Wi-Fi file manager option
+  // on the home screen. This function is kept for potential future use but is no
+  // longer wired into the UI.
   clearLastSyncError();
 
   if (APP_STATE.openEpubPath.empty()) {
@@ -682,6 +686,11 @@ void onSyncProgress() {
   onGoHome();
 }
 
+void onGoToWebFileManager() {
+  exitActivity();
+  enterNewActivity(new CrossPointWebServerActivity(renderer, inputManager, onGoHome));
+}
+
 void onGoHome() {
   exitActivity();
 
@@ -705,7 +714,7 @@ void onGoHome() {
 
   auto onBrowseFiles = []() { onGoToReader(std::string()); };
 
-  enterNewActivity(new HomeActivity(renderer, inputManager, onGoToReaderHome, onBrowseFiles, onSyncProgress,
+  enterNewActivity(new HomeActivity(renderer, inputManager, onGoToReaderHome, onBrowseFiles, onGoToWebFileManager,
                                     onGoToSettings, onGoToFileTransfer, epubName));
 }
 

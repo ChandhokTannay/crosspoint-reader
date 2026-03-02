@@ -169,8 +169,8 @@ void HomeActivity::loop() {
       // Fetch new books from the host server
       onFileTransferOpen();
     } else if (selectorIndex == 3) {
-      // Manually sync reading progress
-      onSyncProgress();
+      // Start Wi-Fi file transfer / web file manager
+      onWebFileManagerOpen();
     } else if (selectorIndex == 4) {
       onSettingsOpen();
     }
@@ -456,7 +456,7 @@ void HomeActivity::render() const {
     menuStartY = maxMenuStartY;
   }
 
-  const char* const labels[4] = {"Browse Library", "Fetch New Books", "Sync Progress", "Settings"};
+  const char* const labels[4] = {"Browse Library", "Fetch New Books", "File Transfer", "Settings"};
 
   for (int i = 0; i < 4; ++i) {
     const int overallIndex = i + 1;  // map to selectorIndex values 1..4
