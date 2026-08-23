@@ -102,7 +102,7 @@ class GfxRenderer {
   // black) for rendering onto a dark selection highlight.
   void drawBitmap(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight, float cropX = 0,
                   float cropY = 0, bool invert = false) const;
-  void drawBitmap1Bit(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight) const;
+  void drawBitmap1Bit(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight, bool invert = false) const;
   void fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state = true) const;
   // Draw a 2bpp image stored in row-major order, 4 pixels per byte (MSB first).
   // If invert is true, black/white are flipped in BW mode (useful for selected cards).

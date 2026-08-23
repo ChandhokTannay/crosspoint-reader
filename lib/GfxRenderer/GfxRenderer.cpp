@@ -571,7 +571,7 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
                              const float cropX, const float cropY, const bool invert) const {
   // For 1-bit bitmaps, use optimized 1-bit rendering path (no crop support for 1-bit)
   if (bitmap.is1Bit() && cropX == 0.0f && cropY == 0.0f) {
-    drawBitmap1Bit(bitmap, x, y, maxWidth, maxHeight);
+    drawBitmap1Bit(bitmap, x, y, maxWidth, maxHeight, invert);
     return;
   }
 
@@ -664,7 +664,7 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
 }
 
 void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y, const int maxWidth,
-                                 const int maxHeight) const {
+                                 const int maxHeight, const bool invert) const {
   float scale = 1.0f;
   bool isScaled = false;
   if (maxWidth > 0 && bitmap.getWidth() > maxWidth) {
@@ -720,11 +720,12 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
       const uint8_t val = outputRow[bmpX / 4] >> (6 - ((bmpX * 2) % 8)) & 0x3;
 
       // For 1-bit source: 0 or 1 -> map to black (0,1,2) or white (3)
-      // val < 3 means black pixel (draw it)
+      // val < 3 means an ink pixel; drawn white when inverted so the
+      // negative stays visible on a dark selection highlight.
       if (val < 3) {
-        drawPixel(screenX, screenY, true);
+        drawPixel(screenX, screenY, !invert);
       }
-      // White pixels (val == 3) are not drawn (leave background)
+      // Background pixels (val == 3) are not drawn (leave background)
     }
   }
 
