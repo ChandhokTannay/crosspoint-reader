@@ -28,6 +28,11 @@ constexpr uint16_t MAX_THUMBNAIL_HEIGHT = 800;
 // Grid layout for the library view (must match renderBooksGrid).
 constexpr int GRID_ITEMS_PER_PAGE = 9;
 
+// Height (px) for on-device generated cover thumbnails in the grid.
+constexpr int GRID_COVER_HEIGHT = 140;
+// Anything smaller than a BMP header is a failed-decode stub.
+constexpr size_t MIN_VALID_BMP_SIZE = 54;
+
 constexpr char COMPLETED_BOOKS_FILE[] = "/.crosspoint/completed_books.txt";
 
 // Count how many EPUB files are directly inside a given series directory.
@@ -546,14 +551,16 @@ void FileBrowserActivity::renderBooksGrid(const int pageWidth, const int pageHei
       enqueueThumbnailRequest(fullPath);
     }
 
-    // Try to retrieve a cached Crosspoint 2bpp thumbnail for the book.
+    // Try to retrieve a cached thumbnail for the book: either an embedded
+    // 2bpp image or an on-device generated cover BMP.
     uint8_t* thumbBuffer = nullptr;
     uint16_t thumbWidth = 0;
     uint16_t thumbHeight = 0;
+    std::string thumbBmpPath;
     bool hasThumbnail = false;
 
     if (!isDirectoryEntry) {
-      hasThumbnail = getThumbnailFromCache(fullPath, &thumbBuffer, &thumbWidth, &thumbHeight);
+      hasThumbnail = getThumbnailFromCache(fullPath, &thumbBuffer, &thumbWidth, &thumbHeight, &thumbBmpPath);
     }
 
     if (selected) {
@@ -573,6 +580,20 @@ void FileBrowserActivity::renderBooksGrid(const int pageWidth, const int pageHei
       // Invert the thumbnail when the card is selected so it stays visible on
       // the dark highlight background.
       renderer.draw2bppImage(pixels, coverX, coverY, thumbWidth, thumbHeight, selected);
+    } else if (hasThumbnail && !thumbBmpPath.empty()) {
+      // On-device generated cover BMP: stream it from SD into the card.
+      HalFile f;
+      if (Storage.openFileForRead("FileBrowser", thumbBmpPath, f)) {
+        Bitmap bitmap(f, true);
+        if (bitmap.parseHeaders() == BmpReaderError::Ok && bitmap.getWidth() > 0 && bitmap.getHeight() > 0) {
+          thumbWidth = static_cast<uint16_t>(std::min(bitmap.getWidth(), cellWidth - 2 * paddingX));
+          thumbHeight = static_cast<uint16_t>(std::min(bitmap.getHeight(), cellHeight - 2 * paddingY));
+          const int coverX = x + (cellWidth - static_cast<int>(thumbWidth)) / 2;
+          const int coverY = y + paddingY;
+          renderer.drawBitmap(bitmap, coverX, coverY, thumbWidth, thumbHeight, 0, 0);
+        }
+        f.close();
+      }
     }
 
     // For completed (but not currently selected) books, draw a light hatch overlay
@@ -735,13 +756,9 @@ void FileBrowserActivity::thumbnailTaskTrampoline(void* param) {
     ThumbnailRequest req{};
     if (xQueueReceive(thumbnailQueue, &req, portMAX_DELAY) == pdTRUE) {
       std::string fullPath(req.path);
-      uint8_t* data = nullptr;
-      size_t size = 0;
-      uint16_t w = 0;
-      uint16_t h = 0;
       // Warm the cache; if a thumbnail was loaded, trigger a re-render so the
       // newly available image can be drawn without requiring user navigation.
-      if (getOrLoadThumbnail(fullPath, &data, &size, &w, &h)) {
+      if (loadThumbnailIntoCache(fullPath)) {
         requestUpdate();
       }
       if (pendingThumbnailRequests > 0) {
@@ -757,19 +774,20 @@ void FileBrowserActivity::thumbnailTaskTrampoline(void* param) {
 }
 
 bool FileBrowserActivity::getThumbnailFromCache(const std::string& fullPath, uint8_t** outData, uint16_t* outWidth,
-                                                uint16_t* outHeight) const {
-  if (!outData || !outWidth || !outHeight || !thumbnailCacheMutex) {
+                                                uint16_t* outHeight, std::string* outBmpPath) const {
+  if (!outData || !outWidth || !outHeight || !outBmpPath || !thumbnailCacheMutex) {
     return false;
   }
 
   bool found = false;
   xSemaphoreTake(thumbnailCacheMutex, portMAX_DELAY);
   for (auto& entry : thumbnailCache) {
-    if (entry.data && entry.path == fullPath) {
+    if (entry.resolved && entry.path == fullPath) {
       *outData = entry.data;
       *outWidth = entry.width;
       *outHeight = entry.height;
-      found = true;
+      *outBmpPath = entry.bmpPath;
+      found = entry.data != nullptr || !entry.bmpPath.empty();
       break;
     }
   }
@@ -786,12 +804,14 @@ void FileBrowserActivity::clearThumbnailCache() {
     if (entry.data) {
       free(entry.data);
       entry.data = nullptr;
-      entry.size = 0;
-      entry.width = 0;
-      entry.height = 0;
-      entry.lastUsedMs = 0;
-      entry.path.clear();
     }
+    entry.size = 0;
+    entry.width = 0;
+    entry.height = 0;
+    entry.lastUsedMs = 0;
+    entry.path.clear();
+    entry.bmpPath.clear();
+    entry.resolved = false;
   }
 
   if (thumbnailCacheMutex) {
@@ -816,11 +836,20 @@ void FileBrowserActivity::enqueueThumbnailRequest(const std::string& fullPath) c
     return;
   }
 
-  // Avoid enqueuing if it's already cached.
-  uint8_t* dummyData = nullptr;
-  uint16_t dummyW = 0;
-  uint16_t dummyH = 0;
-  if (getThumbnailFromCache(fullPath, &dummyData, &dummyW, &dummyH)) {
+  // Avoid enqueuing if this book already has a resolved cache entry
+  // (including the negative "no thumbnail available" marker).
+  bool alreadyResolved = false;
+  if (thumbnailCacheMutex) {
+    xSemaphoreTake(thumbnailCacheMutex, portMAX_DELAY);
+    for (auto& entry : thumbnailCache) {
+      if (entry.resolved && entry.path == fullPath) {
+        alreadyResolved = true;
+        break;
+      }
+    }
+    xSemaphoreGive(thumbnailCacheMutex);
+  }
+  if (alreadyResolved) {
     return;
   }
 
@@ -831,39 +860,32 @@ void FileBrowserActivity::enqueueThumbnailRequest(const std::string& fullPath) c
   }
 }
 
-bool FileBrowserActivity::getOrLoadThumbnail(const std::string& fullPath, uint8_t** outData, size_t* outSize,
-                                             uint16_t* outWidth, uint16_t* outHeight) const {
-  if (!outData || !outSize || !outWidth || !outHeight) {
-    return false;
-  }
-
+bool FileBrowserActivity::loadThumbnailIntoCache(const std::string& fullPath) const {
   const unsigned long now = millis();
 
-  // 1. Look for an existing cached entry in RAM.
+  // 1. Already resolved (positively or negatively)?
   if (thumbnailCacheMutex) {
     xSemaphoreTake(thumbnailCacheMutex, portMAX_DELAY);
     for (auto& entry : thumbnailCache) {
-      if (entry.data && entry.path == fullPath) {
+      if (entry.resolved && entry.path == fullPath) {
         entry.lastUsedMs = now;
-        *outData = entry.data;
-        *outSize = entry.size;
-        *outWidth = entry.width;
-        *outHeight = entry.height;
+        const bool drawable = entry.data != nullptr || !entry.bmpPath.empty();
         xSemaphoreGive(thumbnailCacheMutex);
-        return true;
+        return drawable;
       }
     }
     xSemaphoreGive(thumbnailCacheMutex);
   }
 
-  // 2. No in-memory entry: try the SD-backed thumbnail cache for this EPUB.
   Epub epub(fullPath, "/.crosspoint");
   const std::string thumbCachePath = epub.getCachePath() + "/thumb_2bpp.bin";
 
   uint8_t* buf = nullptr;
   size_t size = 0;
-  bool loadedFromSdCache = false;
+  std::string bmpPath;
+  bool metadataLoaded = false;
 
+  // 2. Embedded 2bpp fast path: SD-backed blob cache first.
   if (Storage.exists(thumbCachePath.c_str())) {
     HalFile f;
     if (Storage.openFileForRead("FileBrowser", thumbCachePath, f)) {
@@ -874,7 +896,6 @@ bool FileBrowserActivity::getOrLoadThumbnail(const std::string& fullPath, uint8_
           const int n = f.read(buf, fileSize);
           if (n == static_cast<int>(fileSize)) {
             size = fileSize;
-            loadedFromSdCache = true;
           } else {
             free(buf);
             buf = nullptr;
@@ -885,61 +906,72 @@ bool FileBrowserActivity::getOrLoadThumbnail(const std::string& fullPath, uint8_
     }
   }
 
-  if (!loadedFromSdCache) {
-    // 3. SD cache miss: parse EPUB metadata to find the embedded 2bpp
-    // thumbnail. Only hit once per book (until its cache is cleared).
-    if (!epub.loadMetadataOnly()) {
-      return false;
-    }
-    const std::string& thumbItem = epub.getThumbnail2bppItem();
-    if (thumbItem.empty()) {
-      return false;
-    }
-
-    buf = epub.readItemContentsToBytes(thumbItem, &size, false);
-    if (!buf || size < 4) {
-      if (buf) {
-        free(buf);
+  // 3. Blob cache miss: parse EPUB metadata for an embedded 2bpp thumbnail.
+  if (!buf) {
+    metadataLoaded = epub.loadMetadataOnly();
+    if (metadataLoaded) {
+      const std::string& thumbItem = epub.getThumbnail2bppItem();
+      if (!thumbItem.empty()) {
+        buf = epub.readItemContentsToBytes(thumbItem, &size, false);
+        if (buf && size >= 4) {
+          // Persist the raw 2bpp blob so future loads for this book never
+          // need to touch the EPUB metadata again.
+          epub.setupCacheDir();
+          HalFile out;
+          if (Storage.openFileForWrite("FileBrowser", thumbCachePath, out)) {
+            out.write(buf, size);
+            out.close();
+          }
+        } else if (buf) {
+          free(buf);
+          buf = nullptr;
+        }
       }
-      return false;
-    }
-
-    // Persist the raw 2bpp blob so future thumbnail loads for this book
-    // never need to touch the EPUB metadata again.
-    epub.setupCacheDir();
-    HalFile out;
-    if (Storage.openFileForWrite("FileBrowser", thumbCachePath, out)) {
-      out.write(buf, size);
-      out.close();
     }
   }
 
-  const uint16_t w = static_cast<uint16_t>(buf[0] | (buf[1] << 8));
-  const uint16_t h = static_cast<uint16_t>(buf[2] | (buf[3] << 8));
-  // Basic sanity checks: dimensions must be non-zero, within reasonable
-  // bounds for the display, and the buffer must be large enough to hold a
-  // 2bpp image of that size (4 pixels per byte, plus 4-byte header).
-  if (w == 0 || h == 0 || w > MAX_THUMBNAIL_WIDTH || h > MAX_THUMBNAIL_HEIGHT) {
-    free(buf);
-    return false;
-  }
-  const size_t pixelCount = static_cast<size_t>(w) * static_cast<size_t>(h);
-  const size_t expectedPixelBytes = (pixelCount + 3) / 4;  // 4 pixels per byte
-  if (size < 4 + expectedPixelBytes) {
-    free(buf);
-    return false;
+  // Validate the embedded thumbnail dimensions/size.
+  uint16_t w = 0;
+  uint16_t h = 0;
+  if (buf) {
+    w = static_cast<uint16_t>(buf[0] | (buf[1] << 8));
+    h = static_cast<uint16_t>(buf[2] | (buf[3] << 8));
+    const size_t pixelCount = static_cast<size_t>(w) * static_cast<size_t>(h);
+    const size_t expectedPixelBytes = (pixelCount + 3) / 4;  // 4 pixels per byte
+    if (w == 0 || h == 0 || w > MAX_THUMBNAIL_WIDTH || h > MAX_THUMBNAIL_HEIGHT || size < 4 + expectedPixelBytes) {
+      free(buf);
+      buf = nullptr;
+    }
   }
 
-  // 4. Choose an empty cache slot and store. To avoid use-after-free races
-  // between the render path and this worker, previously cached entries are
-  // not evicted here; if the cache is full, this thumbnail is dropped.
-  bool cached = false;
+  // 4. No embedded thumbnail: generate a cover BMP on-device from the book's
+  // regular cover image (JPG/PNG), reusing the native pipeline.
+  if (!buf) {
+    if (!metadataLoaded) {
+      metadataLoaded = epub.loadMetadataOnly();
+    }
+    if (metadataLoaded && epub.generateThumbBmp(GRID_COVER_HEIGHT)) {
+      const std::string candidate = epub.getThumbBmpPath(GRID_COVER_HEIGHT);
+      HalFile f;
+      if (Storage.openFileForRead("FileBrowser", candidate, f)) {
+        // A tiny file is the failed-decode stub written by generateThumbBmp.
+        if (f.size() >= MIN_VALID_BMP_SIZE) {
+          bmpPath = candidate;
+        }
+        f.close();
+      }
+    }
+  }
+
+  // 5. Store the result — positive (2bpp buffer or BMP path) or the negative
+  // "no thumbnail" marker so this book is not probed again.
+  bool stored = false;
   if (thumbnailCacheMutex) {
     xSemaphoreTake(thumbnailCacheMutex, portMAX_DELAY);
 
     ThumbnailCacheEntry* target = nullptr;
     for (auto& entry : thumbnailCache) {
-      if (!entry.data) {
+      if (!entry.resolved) {
         target = &entry;
         break;
       }
@@ -951,21 +983,20 @@ bool FileBrowserActivity::getOrLoadThumbnail(const std::string& fullPath, uint8_
       target->size = size;
       target->width = w;
       target->height = h;
+      target->bmpPath = bmpPath;
+      target->resolved = true;
       target->lastUsedMs = now;
-      cached = true;
+      stored = true;
     }
 
     xSemaphoreGive(thumbnailCacheMutex);
   }
 
-  if (!cached) {
-    free(buf);
+  if (!stored) {
+    // Cache full: drop this thumbnail; the card renders text-only for now.
+    if (buf) free(buf);
     return false;
   }
 
-  *outData = buf;
-  *outSize = size;
-  *outWidth = w;
-  *outHeight = h;
-  return true;
+  return buf != nullptr || !bmpPath.empty();
 }

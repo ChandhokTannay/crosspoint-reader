@@ -673,6 +673,10 @@ bool Epub::generateThumbBmp(int height) const {
     if (!success) {
       LOG_ERR("EBP", "Failed to generate thumb BMP from JPG cover image");
       Storage.remove(getThumbBmpPath(height).c_str());
+      // Write empty stub to prevent retrying failed decodes
+      FsFile stub;
+      Storage.openFileForWrite("EBP", getThumbBmpPath(height), stub);
+      stub.close();
     }
     LOG_DBG("EBP", "Generated thumb BMP from JPG cover image, success: %s", success ? "yes" : "no");
     return success;
@@ -707,6 +711,10 @@ bool Epub::generateThumbBmp(int height) const {
     if (!success) {
       LOG_ERR("EBP", "Failed to generate thumb BMP from PNG cover image");
       Storage.remove(getThumbBmpPath(height).c_str());
+      // Write empty stub to prevent retrying failed decodes
+      FsFile stub;
+      Storage.openFileForWrite("EBP", getThumbBmpPath(height), stub);
+      stub.close();
     }
     LOG_DBG("EBP", "Generated thumb BMP from PNG cover image, success: %s", success ? "yes" : "no");
     return success;

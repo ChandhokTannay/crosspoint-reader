@@ -25,10 +25,17 @@ class FileBrowserActivity final : public Activity {
 
   struct ThumbnailCacheEntry {
     std::string path;
+    // Embedded 2bpp thumbnail pixels (fast path), or nullptr when absent.
     uint8_t* data = nullptr;
     size_t size = 0;
     uint16_t width = 0;
     uint16_t height = 0;
+    // On-device generated cover BMP to stream from SD when there is no
+    // embedded 2bpp thumbnail. Empty when data is set or nothing is available.
+    std::string bmpPath;
+    // True once this book has been probed; a resolved entry with no data and
+    // no bmpPath means "no thumbnail available" and is not retried.
+    bool resolved = false;
     unsigned long lastUsedMs = 0;
   };
 
@@ -74,11 +81,10 @@ class FileBrowserActivity final : public Activity {
 
   static void thumbnailTaskTrampoline(void* param);
   [[noreturn]] void thumbnailTaskLoop();
-  bool getThumbnailFromCache(const std::string& fullPath, uint8_t** outData, uint16_t* outWidth,
-                             uint16_t* outHeight) const;
+  bool getThumbnailFromCache(const std::string& fullPath, uint8_t** outData, uint16_t* outWidth, uint16_t* outHeight,
+                             std::string* outBmpPath) const;
   void enqueueThumbnailRequest(const std::string& fullPath) const;
-  bool getOrLoadThumbnail(const std::string& fullPath, uint8_t** outData, size_t* outSize, uint16_t* outWidth,
-                          uint16_t* outHeight) const;
+  bool loadThumbnailIntoCache(const std::string& fullPath) const;
   void clearThumbnailCache();
 
  public:
