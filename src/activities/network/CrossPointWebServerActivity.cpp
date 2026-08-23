@@ -9,10 +9,13 @@
 
 #include <cstddef>
 
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "NetworkModeSelectionActivity.h"
 #include "WifiSelectionActivity.h"
+#include "activities/ActivityManager.h"
 #include "activities/network/CalibreConnectActivity.h"
+#include "activities/settings/CalibreSettingsActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/QrUtils.h"
@@ -105,11 +108,39 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
     modeName = "Connect to Calibre";
   } else if (mode == NetworkMode::CREATE_HOTSPOT) {
     modeName = "Create Hotspot";
+  } else if (mode == NetworkMode::BROWSE_OPDS) {
+    modeName = "OPDS Browser";
   }
   LOG_DBG("WEBACT", "Network mode selected: %s", modeName);
 
   networkMode = mode;
   isApMode = (mode == NetworkMode::CREATE_HOTSPOT);
+
+  if (mode == NetworkMode::BROWSE_OPDS) {
+    if (strlen(SETTINGS.opdsServerUrl) == 0) {
+      // No server configured yet - collect it first, then open the browser
+      startActivityForResult(std::make_unique<CalibreSettingsActivity>(renderer, mappedInput),
+                             [this](const ActivityResult&) {
+                               if (strlen(SETTINGS.opdsServerUrl) > 0) {
+                                 activityManager.goToBrowser();
+                                 return;
+                               }
+                               state = WebServerActivityState::MODE_SELECTION;
+                               startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
+                                                      [this](const ActivityResult& result) {
+                                                        if (result.isCancelled) {
+                                                          onGoHome();
+                                                        } else {
+                                                          onNetworkModeSelected(std::get<NetworkModeResult>(result.data).mode);
+                                                        }
+                                                      });
+                             });
+      return;
+    }
+    // The OPDS browser handles its own WiFi connection
+    activityManager.goToBrowser();
+    return;
+  }
 
   if (mode == NetworkMode::CONNECT_CALIBRE) {
     startActivityForResult(

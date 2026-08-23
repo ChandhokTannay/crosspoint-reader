@@ -15,13 +15,12 @@
 #include "CrossPointState.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
-#include "activities/settings/CalibreSettingsActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/StringUtils.h"
 
 int HomeActivity::getMenuItemCount() const {
-  int count = 5;  // File Browser, Recents, OPDS Browser, File transfer, Settings
+  int count = 4;  // File Browser, Recents, File transfer, Settings
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
@@ -186,7 +185,6 @@ void HomeActivity::loop() {
     int menuSelectedIndex = selectorIndex - static_cast<int>(recentBooks.size());
     const int fileBrowserIdx = idx++;
     const int recentsIdx = idx++;
-    const int opdsLibraryIdx = idx++;
     const int fileTransferIdx = idx++;
     const int settingsIdx = idx;
 
@@ -196,8 +194,6 @@ void HomeActivity::loop() {
       onFileBrowserOpen();
     } else if (menuSelectedIndex == recentsIdx) {
       onRecentsOpen();
-    } else if (menuSelectedIndex == opdsLibraryIdx) {
-      onOpdsBrowserOpen();
     } else if (menuSelectedIndex == fileTransferIdx) {
       onFileTransferOpen();
     } else if (menuSelectedIndex == settingsIdx) {
@@ -221,9 +217,9 @@ void HomeActivity::render(RenderLock&&) {
                           std::bind(&HomeActivity::storeCoverBuffer, this));
 
   // Build menu items dynamically
-  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), tr(STR_OPDS_BROWSER),
-                                        tr(STR_FILE_TRANSFER), tr(STR_SETTINGS_TITLE)};
-  std::vector<UIIcon> menuIcons = {Folder, Recent, Library, Transfer, Settings};
+  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), tr(STR_FILE_TRANSFER),
+                                        tr(STR_SETTINGS_TITLE)};
+  std::vector<UIIcon> menuIcons = {Folder, Recent, Transfer, Settings};
 
   GUI.drawButtonMenu(
       renderer,
@@ -257,14 +253,3 @@ void HomeActivity::onRecentsOpen() { activityManager.goToRecentBooks(); }
 void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 
 void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
-
-void HomeActivity::onOpdsBrowserOpen() {
-  // Without a configured server the browser can only show an error, so send
-  // the user to the OPDS settings screen instead
-  if (strlen(SETTINGS.opdsServerUrl) == 0) {
-    startActivityForResult(std::make_unique<CalibreSettingsActivity>(renderer, mappedInput),
-                           [this](const ActivityResult&) { requestUpdate(); });
-    return;
-  }
-  activityManager.goToBrowser();
-}
