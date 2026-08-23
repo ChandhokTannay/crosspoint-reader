@@ -1,42 +1,35 @@
 #pragma once
 #include <Epub.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
-#include <freertos/task.h>
 
 #include <memory>
 
 #include "../Activity.h"
+#include "util/ButtonNavigator.h"
 
 class EpubReaderChapterSelectionActivity final : public Activity {
   std::shared_ptr<Epub> epub;
-  TaskHandle_t displayTaskHandle = nullptr;
-  SemaphoreHandle_t renderingMutex = nullptr;
+  std::string epubPath;
+  ButtonNavigator buttonNavigator;
   int currentSpineIndex = 0;
   int selectorIndex = 0;
-  bool updateRequired = false;
-  const std::function<void()> onGoBack;
-  const std::function<void(int newSpineIndex)> onSelectSpineIndex;
 
   // Number of items that fit on a page, derived from logical screen height.
   // This adapts automatically when switching between portrait and landscape.
   int getPageItems() const;
 
-  static void taskTrampoline(void* param);
-  [[noreturn]] void displayTaskLoop();
-  void renderScreen();
+  // Total TOC items count
+  int getTotalItems() const;
 
  public:
-  explicit EpubReaderChapterSelectionActivity(GfxRenderer& renderer, InputManager& inputManager,
-                                              const std::shared_ptr<Epub>& epub, const int currentSpineIndex,
-                                              const std::function<void()>& onGoBack,
-                                              const std::function<void(int newSpineIndex)>& onSelectSpineIndex)
-      : Activity(renderer, inputManager),
+  explicit EpubReaderChapterSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                              const std::shared_ptr<Epub>& epub, const std::string& epubPath,
+                                              const int currentSpineIndex)
+      : Activity("EpubReaderChapterSelection", renderer, mappedInput),
         epub(epub),
-        currentSpineIndex(currentSpineIndex),
-        onGoBack(onGoBack),
-        onSelectSpineIndex(onSelectSpineIndex) {}
+        epubPath(epubPath),
+        currentSpineIndex(currentSpineIndex) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  void render(RenderLock&&) override;
 };

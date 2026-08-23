@@ -1,6 +1,6 @@
 #pragma once
-#include <EInkDisplay.h>
 #include <EpdFontFamily.h>
+#include <HalDisplay.h>
 
 #include <string>
 #include <utility>
@@ -9,13 +9,16 @@
 
 class FullScreenMessageActivity final : public Activity {
   std::string text;
-  EpdFontStyle style;
-  EInkDisplay::RefreshMode refreshMode;
+  EpdFontFamily::Style style;
+  HalDisplay::RefreshMode refreshMode;
 
  public:
-  explicit FullScreenMessageActivity(GfxRenderer& renderer, InputManager& inputManager, std::string text,
-                                     const EpdFontStyle style = REGULAR,
-                                     const EInkDisplay::RefreshMode refreshMode = EInkDisplay::FAST_REFRESH)
-      : Activity(renderer, inputManager), text(std::move(text)), style(style), refreshMode(refreshMode) {}
+  explicit FullScreenMessageActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string text,
+                                     const EpdFontFamily::Style style = EpdFontFamily::REGULAR,
+                                     const HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH)
+      : Activity("FullScreenMessage", renderer, mappedInput),
+        text(std::move(text)),
+        style(style),
+        refreshMode(refreshMode) {}
   void onEnter() override;
 };

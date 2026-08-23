@@ -1,75 +1,126 @@
 #include "Page.h"
 
-#include <HardwareSerial.h>
+#include <Logging.h>
 #include <Serialization.h>
 
-namespace {
-constexpr uint8_t PAGE_FILE_VERSION = 3;
+void PageLine::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) {
+  block->render(renderer, fontId, xPos + xOffset, yPos + yOffset);
 }
 
-void PageLine::render(GfxRenderer& renderer, const int fontId) { block->render(renderer, fontId, xPos, yPos); }
-
-void PageLine::serialize(std::ostream& os) {
-  serialization::writePod(os, xPos);
-  serialization::writePod(os, yPos);
+bool PageLine::serialize(FsFile& file) {
+  serialization::writePod(file, xPos);
+  serialization::writePod(file, yPos);
 
   // serialize TextBlock pointed to by PageLine
-  block->serialize(os);
+  return block->serialize(file);
 }
 
-std::unique_ptr<PageLine> PageLine::deserialize(std::istream& is) {
+std::unique_ptr<PageLine> PageLine::deserialize(FsFile& file) {
   int16_t xPos;
   int16_t yPos;
-  serialization::readPod(is, xPos);
-  serialization::readPod(is, yPos);
+  serialization::readPod(file, xPos);
+  serialization::readPod(file, yPos);
 
-  auto tb = TextBlock::deserialize(is);
+  auto tb = TextBlock::deserialize(file);
   return std::unique_ptr<PageLine>(new PageLine(std::move(tb), xPos, yPos));
 }
 
-void Page::render(GfxRenderer& renderer, const int fontId) const {
+void PageImage::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) {
+  // Images don't use fontId or text rendering
+  imageBlock->render(renderer, xPos + xOffset, yPos + yOffset);
+}
+
+bool PageImage::serialize(FsFile& file) {
+  serialization::writePod(file, xPos);
+  serialization::writePod(file, yPos);
+
+  // serialize ImageBlock
+  return imageBlock->serialize(file);
+}
+
+std::unique_ptr<PageImage> PageImage::deserialize(FsFile& file) {
+  int16_t xPos;
+  int16_t yPos;
+  serialization::readPod(file, xPos);
+  serialization::readPod(file, yPos);
+
+  auto ib = ImageBlock::deserialize(file);
+  return std::unique_ptr<PageImage>(new PageImage(std::move(ib), xPos, yPos));
+}
+
+void Page::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) const {
   for (auto& element : elements) {
-    element->render(renderer, fontId);
+    element->render(renderer, fontId, xOffset, yOffset);
   }
 }
 
-void Page::serialize(std::ostream& os) const {
-  serialization::writePod(os, PAGE_FILE_VERSION);
-
-  const uint32_t count = elements.size();
-  serialization::writePod(os, count);
+bool Page::serialize(FsFile& file) const {
+  const uint16_t count = elements.size();
+  serialization::writePod(file, count);
 
   for (const auto& el : elements) {
-    // Only PageLine exists currently
-    serialization::writePod(os, static_cast<uint8_t>(TAG_PageLine));
-    el->serialize(os);
+    // Use getTag() method to determine type
+    serialization::writePod(file, static_cast<uint8_t>(el->getTag()));
+
+    if (!el->serialize(file)) {
+      return false;
+    }
   }
+
+  // Serialize footnotes (clamp to MAX_FOOTNOTES_PER_PAGE to match addFootnote/deserialize limits)
+  const uint16_t fnCount = std::min<uint16_t>(footnotes.size(), MAX_FOOTNOTES_PER_PAGE);
+  serialization::writePod(file, fnCount);
+  for (uint16_t i = 0; i < fnCount; i++) {
+    const auto& fn = footnotes[i];
+    if (file.write(fn.number, sizeof(fn.number)) != sizeof(fn.number) ||
+        file.write(fn.href, sizeof(fn.href)) != sizeof(fn.href)) {
+      LOG_ERR("PGE", "Failed to write footnote");
+      return false;
+    }
+  }
+
+  return true;
 }
 
-std::unique_ptr<Page> Page::deserialize(std::istream& is) {
-  uint8_t version;
-  serialization::readPod(is, version);
-  if (version != PAGE_FILE_VERSION) {
-    Serial.printf("[%lu] [PGE] Deserialization failed: Unknown version %u\n", millis(), version);
-    return nullptr;
-  }
-
+std::unique_ptr<Page> Page::deserialize(FsFile& file) {
   auto page = std::unique_ptr<Page>(new Page());
 
-  uint32_t count;
-  serialization::readPod(is, count);
+  uint16_t count;
+  serialization::readPod(file, count);
 
-  for (uint32_t i = 0; i < count; i++) {
+  for (uint16_t i = 0; i < count; i++) {
     uint8_t tag;
-    serialization::readPod(is, tag);
+    serialization::readPod(file, tag);
 
     if (tag == TAG_PageLine) {
-      auto pl = PageLine::deserialize(is);
+      auto pl = PageLine::deserialize(file);
       page->elements.push_back(std::move(pl));
+    } else if (tag == TAG_PageImage) {
+      auto pi = PageImage::deserialize(file);
+      page->elements.push_back(std::move(pi));
     } else {
-      Serial.printf("[%lu] [PGE] Deserialization failed: Unknown tag %u\n", millis(), tag);
+      LOG_ERR("PGE", "Deserialization failed: Unknown tag %u", tag);
       return nullptr;
     }
+  }
+
+  // Deserialize footnotes
+  uint16_t fnCount;
+  serialization::readPod(file, fnCount);
+  if (fnCount > MAX_FOOTNOTES_PER_PAGE) {
+    LOG_ERR("PGE", "Invalid footnote count %u", fnCount);
+    return nullptr;
+  }
+  page->footnotes.resize(fnCount);
+  for (uint16_t i = 0; i < fnCount; i++) {
+    auto& entry = page->footnotes[i];
+    if (file.read(entry.number, sizeof(entry.number)) != sizeof(entry.number) ||
+        file.read(entry.href, sizeof(entry.href)) != sizeof(entry.href)) {
+      LOG_ERR("PGE", "Failed to read footnote %u", i);
+      return nullptr;
+    }
+    entry.number[sizeof(entry.number) - 1] = '\0';
+    entry.href[sizeof(entry.href) - 1] = '\0';
   }
 
   return page;

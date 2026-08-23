@@ -1,11 +1,14 @@
 #include "TocNcxParser.h"
 
-#include <HardwareSerial.h>
+#include <FsHelpers.h>
+#include <Logging.h>
+
+#include "../BookMetadataCache.h"
 
 bool TocNcxParser::setup() {
   parser = XML_ParserCreate(nullptr);
   if (!parser) {
-    Serial.printf("[%lu] [TOC] Couldn't allocate memory for parser\n", millis());
+    LOG_DBG("TOC", "Couldn't allocate memory for parser");
     return false;
   }
 
@@ -15,12 +18,14 @@ bool TocNcxParser::setup() {
   return true;
 }
 
-bool TocNcxParser::teardown() {
+TocNcxParser::~TocNcxParser() {
   if (parser) {
+    XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
+    XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
+    XML_SetCharacterDataHandler(parser, nullptr);
     XML_ParserFree(parser);
     parser = nullptr;
   }
-  return true;
 }
 
 size_t TocNcxParser::write(const uint8_t data) { return write(&data, 1); }
@@ -34,7 +39,12 @@ size_t TocNcxParser::write(const uint8_t* buffer, const size_t size) {
   while (remainingInBuffer > 0) {
     void* const buf = XML_GetBuffer(parser, 1024);
     if (!buf) {
-      Serial.printf("[%lu] [TOC] Couldn't allocate memory for buffer\n", millis());
+      LOG_DBG("TOC", "Couldn't allocate memory for buffer");
+      XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
+      XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
+      XML_SetCharacterDataHandler(parser, nullptr);
+      XML_ParserFree(parser);
+      parser = nullptr;
       return 0;
     }
 
@@ -42,8 +52,13 @@ size_t TocNcxParser::write(const uint8_t* buffer, const size_t size) {
     memcpy(buf, currentBufferPos, toRead);
 
     if (XML_ParseBuffer(parser, static_cast<int>(toRead), remainingSize == toRead) == XML_STATUS_ERROR) {
-      Serial.printf("[%lu] [TOC] Parse error at line %lu: %s\n", millis(), XML_GetCurrentLineNumber(parser),
-                    XML_ErrorString(XML_GetErrorCode(parser)));
+      LOG_DBG("TOC", "Parse error at line %lu: %s", XML_GetCurrentLineNumber(parser),
+              XML_ErrorString(XML_GetErrorCode(parser)));
+      XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
+      XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
+      XML_SetCharacterDataHandler(parser, nullptr);
+      XML_ParserFree(parser);
+      parser = nullptr;
       return 0;
     }
 
@@ -145,7 +160,7 @@ void XMLCALL TocNcxParser::endElement(void* userData, const XML_Char* name) {
     // This is the safest place to push the data, assuming <navLabel> always comes before <content>.
     // NCX spec says navLabel comes before content.
     if (!self->currentLabel.empty() && !self->currentSrc.empty()) {
-      std::string href = self->baseContentPath + self->currentSrc;
+      std::string href = FsHelpers::normalisePath(self->baseContentPath + self->currentSrc);
       std::string anchor;
 
       const size_t pos = href.find('#');
@@ -154,8 +169,9 @@ void XMLCALL TocNcxParser::endElement(void* userData, const XML_Char* name) {
         href = href.substr(0, pos);
       }
 
-      // Push to vector
-      self->toc.emplace_back(self->currentLabel, href, anchor, self->currentDepth);
+      if (self->cache) {
+        self->cache->createTocEntry(self->currentLabel, href, anchor, self->currentDepth);
+      }
 
       // Clear them so we don't re-add them if there are weird XML structures
       self->currentLabel.clear();

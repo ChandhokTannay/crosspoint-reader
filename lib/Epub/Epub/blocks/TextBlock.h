@@ -1,40 +1,38 @@
 #pragma once
 #include <EpdFontFamily.h>
+#include <HalStorage.h>
 
-#include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Block.h"
+#include "BlockStyle.h"
 
-// represents a block of words in the html document
+// Represents a line of text on a page
 class TextBlock final : public Block {
- public:
-  enum BLOCK_STYLE : uint8_t {
-    JUSTIFIED = 0,
-    LEFT_ALIGN = 1,
-    CENTER_ALIGN = 2,
-    RIGHT_ALIGN = 3,
-  };
-
  private:
-  std::list<std::string> words;
-  std::list<uint16_t> wordXpos;
-  std::list<EpdFontStyle> wordStyles;
-  BLOCK_STYLE style;
+  std::vector<std::string> words;
+  std::vector<int16_t> wordXpos;
+  std::vector<EpdFontFamily::Style> wordStyles;
+  BlockStyle blockStyle;
 
  public:
-  explicit TextBlock(std::list<std::string> words, std::list<uint16_t> word_xpos, std::list<EpdFontStyle> word_styles,
-                     const BLOCK_STYLE style)
-      : words(std::move(words)), wordXpos(std::move(word_xpos)), wordStyles(std::move(word_styles)), style(style) {}
+  explicit TextBlock(std::vector<std::string> words, std::vector<int16_t> word_xpos,
+                     std::vector<EpdFontFamily::Style> word_styles, const BlockStyle& blockStyle = BlockStyle())
+      : words(std::move(words)),
+        wordXpos(std::move(word_xpos)),
+        wordStyles(std::move(word_styles)),
+        blockStyle(blockStyle) {}
   ~TextBlock() override = default;
-  void setStyle(const BLOCK_STYLE style) { this->style = style; }
-  BLOCK_STYLE getStyle() const { return style; }
+  void setBlockStyle(const BlockStyle& blockStyle) { this->blockStyle = blockStyle; }
+  const BlockStyle& getBlockStyle() const { return blockStyle; }
+  const std::vector<std::string>& getWords() const { return words; }
   bool isEmpty() override { return words.empty(); }
-  void layout(GfxRenderer& renderer) override {};
+  size_t wordCount() const { return words.size(); }
   // given a renderer works out where to break the words into lines
   void render(const GfxRenderer& renderer, int fontId, int x, int y) const;
   BlockType getType() override { return TEXT_BLOCK; }
-  void serialize(std::ostream& os) const;
-  static std::unique_ptr<TextBlock> deserialize(std::istream& is);
+  bool serialize(FsFile& file) const;
+  static std::unique_ptr<TextBlock> deserialize(FsFile& file);
 };

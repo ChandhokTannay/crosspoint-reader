@@ -1,54 +1,42 @@
 #pragma once
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
-#include <freertos/task.h>
-
 #include <functional>
-#include <string>
-#include <cstdint>
+#include <vector>
 
 #include "../Activity.h"
+#include "./FileBrowserActivity.h"
+#include "util/ButtonNavigator.h"
+
+struct RecentBook;
+struct Rect;
 
 class HomeActivity final : public Activity {
-  TaskHandle_t displayTaskHandle = nullptr;
-  SemaphoreHandle_t renderingMutex = nullptr;
+  ButtonNavigator buttonNavigator;
   int selectorIndex = 0;
-  bool updateRequired = false;
-  const std::function<void()> onContinueReadingOpen;
-  const std::function<void()> onBrowseFilesOpen;
-  // Opens the Wi-Fi web file manager (replaces the old "Sync Progress" menu item).
-  const std::function<void()> onWebFileManagerOpen;
-  const std::function<void()> onSettingsOpen;
-  // Reused for the "Fetch New Books" action on the home menu.
-  const std::function<void()> onFileTransferOpen;
-  const std::string currentEpubName;
+  bool recentsLoading = false;
+  bool recentsLoaded = false;
+  bool firstRenderDone = false;
+  bool coverRendered = false;      // Track if cover has been rendered once
+  bool coverBufferStored = false;  // Track if cover buffer is stored
+  uint8_t* coverBuffer = nullptr;  // HomeActivity's own buffer for cover image
+  std::vector<RecentBook> recentBooks;
+  void onSelectBook(const std::string& path);
+  void onFileBrowserOpen();
+  void onRecentsOpen();
+  void onSettingsOpen();
+  void onFileTransferOpen();
 
-  // Cached 2bpp thumbnail for the currently open book (if available).
-  uint8_t* currentThumbData = nullptr;  // buffer returned by Epub::readItemContentsToBytes
-  uint16_t currentThumbWidth = 0;
-  uint16_t currentThumbHeight = 0;
-  bool hasCurrentThumb = false;
-
-  static void taskTrampoline(void* param);
-  [[noreturn]] void displayTaskLoop();
-  void render() const;
+  int getMenuItemCount() const;
+  bool storeCoverBuffer();    // Store frame buffer for cover image
+  bool restoreCoverBuffer();  // Restore frame buffer from stored cover
+  void freeCoverBuffer();     // Free the stored cover buffer
+  void loadRecentBooks(int maxBooks);
+  void loadRecentCovers(int coverHeight);
 
  public:
-  explicit HomeActivity(GfxRenderer& renderer, InputManager& inputManager,
-                        const std::function<void()>& onContinueReadingOpen,
-                        const std::function<void()>& onBrowseFilesOpen,
-                        const std::function<void()>& onWebFileManagerOpen,
-                        const std::function<void()>& onSettingsOpen,
-                        const std::function<void()>& onFileTransferOpen,
-                        const std::string& currentEpubName)
-      : Activity(renderer, inputManager),
-        onContinueReadingOpen(onContinueReadingOpen),
-        onBrowseFilesOpen(onBrowseFilesOpen),
-        onWebFileManagerOpen(onWebFileManagerOpen),
-        onSettingsOpen(onSettingsOpen),
-        onFileTransferOpen(onFileTransferOpen),
-        currentEpubName(currentEpubName) {}
+  explicit HomeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
+      : Activity("Home", renderer, mappedInput) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  void render(RenderLock&&) override;
 };

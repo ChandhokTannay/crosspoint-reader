@@ -1,7 +1,4 @@
 #pragma once
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
-#include <freertos/task.h>
 
 #include <cstdint>
 #include <functional>
@@ -9,8 +6,8 @@
 #include <string>
 #include <vector>
 
-#include "../Activity.h"
-#include "../util/KeyboardEntryActivity.h"
+#include "activities/Activity.h"
+#include "util/ButtonNavigator.h"
 
 // Structure to hold WiFi network information
 struct WifiNetworkInfo {
@@ -18,10 +15,12 @@ struct WifiNetworkInfo {
   int32_t rssi;
   bool isEncrypted;
   bool hasSavedPassword;  // Whether we have saved credentials for this network
+  std::string ipAddress;  // Populated after connection for display
 };
 
 // WiFi selection states
 enum class WifiSelectionState {
+  AUTO_CONNECTING,    // Trying to connect to the last known network
   SCANNING,           // Scanning for networks
   NETWORK_LIST,       // Displaying available networks
   PASSWORD_ENTRY,     // Entering password for selected network
@@ -44,20 +43,15 @@ enum class WifiSelectionState {
  * The onComplete callback receives true if connected successfully, false if cancelled.
  */
 class WifiSelectionActivity final : public Activity {
-  TaskHandle_t displayTaskHandle = nullptr;
-  SemaphoreHandle_t renderingMutex = nullptr;
-  bool updateRequired = false;
+  ButtonNavigator buttonNavigator;
+
   WifiSelectionState state = WifiSelectionState::SCANNING;
-  int selectedNetworkIndex = 0;
+  size_t selectedNetworkIndex = 0;
   std::vector<WifiNetworkInfo> networks;
-  const std::function<void(bool connected)> onComplete;
 
   // Selected network for connection
   std::string selectedSSID;
   bool selectedRequiresPassword = false;
-
-  // On-screen keyboard for password entry
-  std::unique_ptr<KeyboardEntryActivity> keyboard;
 
   // Connection result
   std::string connectedIP;
@@ -66,8 +60,17 @@ class WifiSelectionActivity final : public Activity {
   // Password to potentially save (from keyboard or saved credentials)
   std::string enteredPassword;
 
+  // Cached MAC address string for display
+  std::string cachedMacAddress;
+
   // Whether network was connected using a saved password (skip save prompt)
   bool usedSavedPassword = false;
+
+  // Whether to attempt auto-connect on entry
+  const bool allowAutoConnect;
+
+  // Whether we are attempting to auto-connect
+  bool autoConnecting = false;
 
   // Save/forget prompt selection (0 = Yes, 1 = No)
   int savePromptSelection = 0;
@@ -77,9 +80,6 @@ class WifiSelectionActivity final : public Activity {
   static constexpr unsigned long CONNECTION_TIMEOUT_MS = 15000;
   unsigned long connectionStartTime = 0;
 
-  static void taskTrampoline(void* param);
-  [[noreturn]] void displayTaskLoop();
-  void render() const;
   void renderNetworkList() const;
   void renderPasswordEntry() const;
   void renderConnecting() const;
@@ -95,14 +95,13 @@ class WifiSelectionActivity final : public Activity {
   void checkConnectionStatus();
   std::string getSignalStrengthIndicator(int32_t rssi) const;
 
+  void onComplete(bool connected);
+
  public:
-  explicit WifiSelectionActivity(GfxRenderer& renderer, InputManager& inputManager,
-                                 const std::function<void(bool connected)>& onComplete)
-      : Activity(renderer, inputManager), onComplete(onComplete) {}
+  explicit WifiSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool autoConnect = true)
+      : Activity("WifiSelection", renderer, mappedInput), allowAutoConnect(autoConnect) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
-
-  // Get the IP address after successful connection
-  const std::string& getConnectedIP() const { return connectedIP; }
+  void render(RenderLock&&) override;
 };

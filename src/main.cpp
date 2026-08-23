@@ -1,405 +1,163 @@
 #include <Arduino.h>
-#include <EInkDisplay.h>
 #include <Epub.h>
+#include <FontDecompressor.h>
 #include <GfxRenderer.h>
-#include <InputManager.h>
-#include <SD.h>
+#include <HalDisplay.h>
+#include <HalGPIO.h>
+#include <HalPowerManager.h>
+#include <HalStorage.h>
+#include <I18n.h>
+#include <Logging.h>
 #include <SPI.h>
-#include <WiFi.h>
-#include <esp_sleep.h>
-#include <builtinFonts/bookerly_2b.h>
-#include <builtinFonts/bookerly_bold_2b.h>
-#include <builtinFonts/bookerly_bold_italic_2b.h>
-#include <builtinFonts/bookerly_italic_2b.h>
-#include <builtinFonts/pixelarial14.h>
-#include <builtinFonts/ubuntu_10.h>
-#include <builtinFonts/ubuntu_bold_10.h>
+#include <builtinFonts/all.h>
 
-#include <vector>
+#include <cstring>
 
-#include "Battery.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
-#include "activities/boot_sleep/BootActivity.h"
-#include "activities/boot_sleep/SleepActivity.h"
-#include "activities/home/HomeActivity.h"
-#include "activities/network/CrossPointWebServerActivity.h"
-#include "activities/reader/ReaderActivity.h"
-#include "activities/settings/SettingsActivity.h"
-#include "activities/util/FullScreenMessageActivity.h"
-#include "activities/util/DownloadProgressActivity.h"
-#include "BookSyncClient.h"
-#include "SyncClient.h"
-#include "config.h"
+#include "KOReaderCredentialStore.h"
+#include "MappedInputManager.h"
+#include "RecentBooksStore.h"
+#include "activities/Activity.h"
+#include "activities/ActivityManager.h"
+#include "components/UITheme.h"
+#include "fontIds.h"
+#include "util/ButtonNavigator.h"
+#include "util/ScreenshotUtil.h"
 
-#define SPI_FQ 40000000
-// Display SPI pins (custom pins for XteinkX4, not hardware SPI defaults)
-#define EPD_SCLK 8   // SPI Clock
-#define EPD_MOSI 10  // SPI MOSI (Master Out Slave In)
-#define EPD_CS 21    // Chip Select
-#define EPD_DC 4     // Data/Command
-#define EPD_RST 5    // Reset
-#define EPD_BUSY 6   // Busy
-
-#define UART0_RXD 20  // Used for USB connection detection
-
-#define SD_SPI_CS 12
-#define SD_SPI_MISO 7
-
-EInkDisplay einkDisplay(EPD_SCLK, EPD_MOSI, EPD_CS, EPD_DC, EPD_RST, EPD_BUSY);
-InputManager inputManager;
-GfxRenderer renderer(einkDisplay);
-Activity* currentActivity;
-
-// Forward declarations so helpers can call these before their full
-// definitions later in the file.
-void exitActivity();
-void enterNewActivity(Activity* activity);
-
-// Persist a flag across deep sleep resets so we can distinguish cold boot
-// from wake-from-sleep and skip the boot screen on resume.
-RTC_DATA_ATTR bool wokeFromDeepSleepFlag = false;
-
-bool getCachedReadingProgress(const std::string& epubPath, uint8_t& progressOut) {
-  if (epubPath.empty()) {
-    return false;
-  }
-
-  const std::string cacheRoot = "/.crosspoint";
-  const std::string cachePath = cacheRoot + "/epub_" + std::to_string(std::hash<std::string>{}(epubPath));
-
-  if (!SD.exists(cachePath.c_str())) {
-    return false;
-  }
-
-  // Read last-known spine and page index from progress.bin
-  File progressFile = SD.open((cachePath + "/progress.bin").c_str());
-  if (!progressFile) {
-    return false;
-  }
-
-  uint8_t data[4];
-  if (progressFile.read(data, 4) != 4) {
-    progressFile.close();
-    return false;
-  }
-  progressFile.close();
-
-  const uint16_t spineIndex = static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
-  const uint16_t pageIndex = static_cast<uint16_t>(data[2]) | (static_cast<uint16_t>(data[3]) << 8);
-
-  // Read cumulative spine item sizes from spine_size.bin
-  File spineFile = SD.open((cachePath + "/spine_size.bin").c_str());
-  if (!spineFile) {
-    return false;
-  }
-
-  uint32_t bookSize = 0;
-  uint32_t prevChapterSize = 0;
-  uint32_t chapterEndSize = 0;
-  uint8_t buf[4];
-  uint16_t index = 0;
-
-  while (spineFile.read(buf, 4) == 4) {
-    const uint32_t cumulative = static_cast<uint32_t>(buf[0]) | (static_cast<uint32_t>(buf[1]) << 8) |
-                                (static_cast<uint32_t>(buf[2]) << 16) | (static_cast<uint32_t>(buf[3]) << 24);
-
-    if (index == spineIndex - 1) {
-      prevChapterSize = cumulative;
-    }
-    if (index == spineIndex) {
-      chapterEndSize = cumulative;
-    }
-
-    bookSize = cumulative;
-    ++index;
-  }
-  spineFile.close();
-
-  if (bookSize == 0 || spineIndex >= index) {
-    return false;
-  }
-
-  // Fallbacks in case we didn't find an entry for the current spine index
-  if (spineIndex == 0) {
-    prevChapterSize = 0;
-  }
-  if (chapterEndSize <= prevChapterSize) {
-    chapterEndSize = prevChapterSize;
-  }
-
-  const uint32_t curChapterSize = chapterEndSize - prevChapterSize;
-
-  // Default to start-of-chapter if we can't recover page-level info
-  float sectionProg = 0.0f;
-
-  // Try to refine within-chapter progress using cached page metadata (section.bin)
-  const std::string sectionDir = cachePath + "/" + std::to_string(spineIndex);
-  if (SD.exists(sectionDir.c_str())) {
-    File sectionFile = SD.open((sectionDir + "/section.bin").c_str());
-    if (sectionFile) {
-      const uint32_t sz = sectionFile.size();
-      if (sz >= 4 && sectionFile.seek(sz - 4)) {
-        uint8_t pageBuf[4];
-        if (sectionFile.read(pageBuf, 4) == 4) {
-          const uint32_t pageCount = static_cast<uint32_t>(pageBuf[0]) | (static_cast<uint32_t>(pageBuf[1]) << 8) |
-                                     (static_cast<uint32_t>(pageBuf[2]) << 16) |
-                                     (static_cast<uint32_t>(pageBuf[3]) << 24);
-          if (pageCount > 0 && pageIndex < pageCount) {
-            sectionProg = static_cast<float>(pageIndex) / static_cast<float>(pageCount);
-          }
-        }
-      }
-      sectionFile.close();
-    }
-  }
-
-  const float progress =
-      static_cast<float>(prevChapterSize + static_cast<uint32_t>(sectionProg * static_cast<float>(curChapterSize))) /
-      static_cast<float>(bookSize);
-  progressOut = static_cast<uint8_t>(progress * 100.0f + 0.5f);
-  return true;
-}
+HalDisplay display;
+HalGPIO gpio;
+MappedInputManager mappedInputManager(gpio);
+GfxRenderer renderer(display);
+ActivityManager activityManager(renderer, mappedInputManager);
+FontDecompressor fontDecompressor;
 
 // Fonts
-EpdFont bookerlyFont(&bookerly_2b);
-EpdFont bookerlyBoldFont(&bookerly_bold_2b);
-EpdFont bookerlyItalicFont(&bookerly_italic_2b);
-EpdFont bookerlyBoldItalicFont(&bookerly_bold_italic_2b);
-EpdFontFamily bookerlyFontFamily(&bookerlyFont, &bookerlyBoldFont, &bookerlyItalicFont, &bookerlyBoldItalicFont);
+EpdFont bookerly14RegularFont(&bookerly_14_regular);
+EpdFont bookerly14BoldFont(&bookerly_14_bold);
+EpdFont bookerly14ItalicFont(&bookerly_14_italic);
+EpdFont bookerly14BoldItalicFont(&bookerly_14_bolditalic);
+EpdFontFamily bookerly14FontFamily(&bookerly14RegularFont, &bookerly14BoldFont, &bookerly14ItalicFont,
+                                   &bookerly14BoldItalicFont);
+#ifndef OMIT_FONTS
+EpdFont bookerly12RegularFont(&bookerly_12_regular);
+EpdFont bookerly12BoldFont(&bookerly_12_bold);
+EpdFont bookerly12ItalicFont(&bookerly_12_italic);
+EpdFont bookerly12BoldItalicFont(&bookerly_12_bolditalic);
+EpdFontFamily bookerly12FontFamily(&bookerly12RegularFont, &bookerly12BoldFont, &bookerly12ItalicFont,
+                                   &bookerly12BoldItalicFont);
+EpdFont bookerly16RegularFont(&bookerly_16_regular);
+EpdFont bookerly16BoldFont(&bookerly_16_bold);
+EpdFont bookerly16ItalicFont(&bookerly_16_italic);
+EpdFont bookerly16BoldItalicFont(&bookerly_16_bolditalic);
+EpdFontFamily bookerly16FontFamily(&bookerly16RegularFont, &bookerly16BoldFont, &bookerly16ItalicFont,
+                                   &bookerly16BoldItalicFont);
+EpdFont bookerly18RegularFont(&bookerly_18_regular);
+EpdFont bookerly18BoldFont(&bookerly_18_bold);
+EpdFont bookerly18ItalicFont(&bookerly_18_italic);
+EpdFont bookerly18BoldItalicFont(&bookerly_18_bolditalic);
+EpdFontFamily bookerly18FontFamily(&bookerly18RegularFont, &bookerly18BoldFont, &bookerly18ItalicFont,
+                                   &bookerly18BoldItalicFont);
 
-EpdFont smallFont(&pixelarial14);
+EpdFont notosans12RegularFont(&notosans_12_regular);
+EpdFont notosans12BoldFont(&notosans_12_bold);
+EpdFont notosans12ItalicFont(&notosans_12_italic);
+EpdFont notosans12BoldItalicFont(&notosans_12_bolditalic);
+EpdFontFamily notosans12FontFamily(&notosans12RegularFont, &notosans12BoldFont, &notosans12ItalicFont,
+                                   &notosans12BoldItalicFont);
+EpdFont notosans14RegularFont(&notosans_14_regular);
+EpdFont notosans14BoldFont(&notosans_14_bold);
+EpdFont notosans14ItalicFont(&notosans_14_italic);
+EpdFont notosans14BoldItalicFont(&notosans_14_bolditalic);
+EpdFontFamily notosans14FontFamily(&notosans14RegularFont, &notosans14BoldFont, &notosans14ItalicFont,
+                                   &notosans14BoldItalicFont);
+EpdFont notosans16RegularFont(&notosans_16_regular);
+EpdFont notosans16BoldFont(&notosans_16_bold);
+EpdFont notosans16ItalicFont(&notosans_16_italic);
+EpdFont notosans16BoldItalicFont(&notosans_16_bolditalic);
+EpdFontFamily notosans16FontFamily(&notosans16RegularFont, &notosans16BoldFont, &notosans16ItalicFont,
+                                   &notosans16BoldItalicFont);
+EpdFont notosans18RegularFont(&notosans_18_regular);
+EpdFont notosans18BoldFont(&notosans_18_bold);
+EpdFont notosans18ItalicFont(&notosans_18_italic);
+EpdFont notosans18BoldItalicFont(&notosans_18_bolditalic);
+EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, &notosans18ItalicFont,
+                                   &notosans18BoldItalicFont);
+
+EpdFont opendyslexic8RegularFont(&opendyslexic_8_regular);
+EpdFont opendyslexic8BoldFont(&opendyslexic_8_bold);
+EpdFont opendyslexic8ItalicFont(&opendyslexic_8_italic);
+EpdFont opendyslexic8BoldItalicFont(&opendyslexic_8_bolditalic);
+EpdFontFamily opendyslexic8FontFamily(&opendyslexic8RegularFont, &opendyslexic8BoldFont, &opendyslexic8ItalicFont,
+                                      &opendyslexic8BoldItalicFont);
+EpdFont opendyslexic10RegularFont(&opendyslexic_10_regular);
+EpdFont opendyslexic10BoldFont(&opendyslexic_10_bold);
+EpdFont opendyslexic10ItalicFont(&opendyslexic_10_italic);
+EpdFont opendyslexic10BoldItalicFont(&opendyslexic_10_bolditalic);
+EpdFontFamily opendyslexic10FontFamily(&opendyslexic10RegularFont, &opendyslexic10BoldFont, &opendyslexic10ItalicFont,
+                                       &opendyslexic10BoldItalicFont);
+EpdFont opendyslexic12RegularFont(&opendyslexic_12_regular);
+EpdFont opendyslexic12BoldFont(&opendyslexic_12_bold);
+EpdFont opendyslexic12ItalicFont(&opendyslexic_12_italic);
+EpdFont opendyslexic12BoldItalicFont(&opendyslexic_12_bolditalic);
+EpdFontFamily opendyslexic12FontFamily(&opendyslexic12RegularFont, &opendyslexic12BoldFont, &opendyslexic12ItalicFont,
+                                       &opendyslexic12BoldItalicFont);
+EpdFont opendyslexic14RegularFont(&opendyslexic_14_regular);
+EpdFont opendyslexic14BoldFont(&opendyslexic_14_bold);
+EpdFont opendyslexic14ItalicFont(&opendyslexic_14_italic);
+EpdFont opendyslexic14BoldItalicFont(&opendyslexic_14_bolditalic);
+EpdFontFamily opendyslexic14FontFamily(&opendyslexic14RegularFont, &opendyslexic14BoldFont, &opendyslexic14ItalicFont,
+                                       &opendyslexic14BoldItalicFont);
+#endif  // OMIT_FONTS
+
+EpdFont smallFont(&notosans_8_regular);
 EpdFontFamily smallFontFamily(&smallFont);
 
-EpdFont ubuntu10Font(&ubuntu_10);
-EpdFont ubuntuBold10Font(&ubuntu_bold_10);
-EpdFontFamily ubuntuFontFamily(&ubuntu10Font, &ubuntuBold10Font);
+EpdFont ui10RegularFont(&ubuntu_10_regular);
+EpdFont ui10BoldFont(&ubuntu_10_bold);
+EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
 
-namespace {
-void showSyncStatus(const char* msg);
+EpdFont ui12RegularFont(&ubuntu_12_regular);
+EpdFont ui12BoldFont(&ubuntu_12_bold);
+EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 
-// Helper used by the Fetch New Books flow to show a progress bar
-// while downloading multiple books.
-void showBookDownloadProgress(const std::string& label, float progress) {
-  exitActivity();
-  enterNewActivity(new DownloadProgressActivity(renderer, inputManager, label, progress));
-  // Small delay so the user can see the updated bar before the next
-  // network step; the actual download work happens after this call.
-  delay(200);
-}
+// measurement of power button press duration calibration value
+unsigned long t1 = 0;
+unsigned long t2 = 0;
 
-// List immediate child folders under the /Books directory (one level deep).
-// Hidden entries (starting with '.') are ignored.
-std::vector<std::string> listTopLevelBookFolders() {
-  std::vector<std::string> folders;
-
-  const char* booksRoot = "/Books";
-  if (!SD.exists(booksRoot)) {
-    return folders;
+// Verify power button press duration on wake-up from deep sleep
+// Pre-condition: isWakeupByPowerButton() == true
+void verifyPowerButtonDuration() {
+  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) {
+    // Fast path for short press
+    // Needed because inputManager.isPressed() may take up to ~500ms to return the correct state
+    return;
   }
 
-  File root = SD.open(booksRoot);
-  if (!root) {
-    return folders;
-  }
-
-  for (File file = root.openNextFile(); file; file = root.openNextFile()) {
-    std::string name = std::string(file.name());
-    if (name.empty() || name[0] == '.') {
-      file.close();
-      continue;
-    }
-
-    if (file.isDirectory()) {
-      folders.push_back(name);
-    }
-    file.close();
-  }
-
-  root.close();
-  return folders;
-}
-
-// Simple blocking UI that lets the user choose a folder for a downloaded
-// book. Returns an empty string to keep the book in the root /Books
-// directory, or the name of a selected child folder.
-std::string promptBookFolderFor(const std::string& bookFilename) {
-  std::vector<std::string> folders = listTopLevelBookFolders();
-  if (folders.empty()) {
-    // No folders defined under /Books; nothing to choose.
-    return std::string();
-  }
-
-  // Derive a short display title from the filename (strip .epub, uppercase).
-  std::string title = bookFilename;
-  const std::string suffix = ".epub";
-  if (title.size() >= suffix.size() &&
-      title.compare(title.size() - suffix.size(), suffix.size(), suffix) == 0) {
-    title.erase(title.size() - suffix.size());
-  }
-  for (char& c : title) {
-    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-  }
-
-  // Build option labels: first entry keeps book in root, then each folder.
-  std::vector<std::string> options;
-  options.reserve(folders.size() + 1);
-  options.emplace_back("Root (/Books)");
-  for (const auto& f : folders) {
-    options.push_back(f);
-  }
-
-  int selectedIndex = 0;
-
-  while (true) {
-    const int screenWidth = GfxRenderer::getScreenWidth();
-    const int screenHeight = GfxRenderer::getScreenHeight();
-
-    renderer.clearScreen();
-
-    // Header
-    renderer.drawCenteredText(READER_FONT_ID, 10, "Tannay's Reader", true, BOLD);
-
-    // Prompt text
-    renderer.drawCenteredText(UI_FONT_ID, 40, "Choose folder for:", true, REGULAR);
-    renderer.drawCenteredText(UI_FONT_ID, 60, title.c_str(), true, REGULAR);
-
-    const int marginX = 20;
-    const int startY = 100;
-    const int rowHeight = renderer.getLineHeight(UI_FONT_ID) + 8;
-
-    for (size_t i = 0; i < options.size(); ++i) {
-      const bool selected = (static_cast<int>(i) == selectedIndex);
-      const int y = startY + static_cast<int>(i) * rowHeight;
-      const int boxHeight = rowHeight;
-
-      if (selected) {
-        renderer.fillRect(marginX, y - 4, screenWidth - 2 * marginX, boxHeight);
-      } else {
-        renderer.drawRect(marginX, y - 4, screenWidth - 2 * marginX, boxHeight);
-      }
-
-      renderer.drawText(UI_FONT_ID, marginX + 10, y,
-                        options[i].c_str(), !selected, REGULAR);
-    }
-
-    // Help text at the bottom.
-    renderer.drawText(SMALL_FONT_ID, marginX, screenHeight - 30,
-                      "OK: Select   Back: Root", false, REGULAR);
-
-    renderer.displayBuffer();
-
-    // Wait for a navigation or confirmation event.
-    while (true) {
-      inputManager.update();
-
-      const bool prevPressed =
-          inputManager.wasPressed(InputManager::BTN_UP) ||
-          inputManager.wasPressed(InputManager::BTN_LEFT);
-      const bool nextPressed =
-          inputManager.wasPressed(InputManager::BTN_DOWN) ||
-          inputManager.wasPressed(InputManager::BTN_RIGHT);
-
-      if (prevPressed) {
-        const int count = static_cast<int>(options.size());
-        selectedIndex = (selectedIndex + count - 1) % count;
-        break;  // redraw with new selection
-      }
-      if (nextPressed) {
-        const int count = static_cast<int>(options.size());
-        selectedIndex = (selectedIndex + 1) % count;
-        break;  // redraw with new selection
-      }
-      if (inputManager.wasPressed(InputManager::BTN_CONFIRM)) {
-        if (selectedIndex == 0) {
-          // Keep in root
-          return std::string();
-        }
-        // Map selection index back to folder name.
-        return folders[static_cast<size_t>(selectedIndex - 1)];
-      }
-      if (inputManager.wasPressed(InputManager::BTN_BACK)) {
-        // Treat BACK as "keep in root".
-        return std::string();
-      }
-
-      delay(50);
-    }
-  }
-}
-
-// After a book has been downloaded into /Books/<name>, optionally prompt
-// the user to place it into a subfolder and move the file if requested.
-void maybePromptToMoveDownloadedBook(const std::string& booksRoot, const std::string& bookName) {
-  // booksRoot is expected to be something like "/Books" (no trailing slash).
-  std::string root = booksRoot;
-  if (root.empty()) {
-    root = "/Books";
-  }
-
-  if (root.back() == '/') {
-    root.pop_back();
-  }
-
-  // If there are no folders, promptBookFolderFor() will early-exit.
-  const std::string selectedFolder = promptBookFolderFor(bookName);
-  if (selectedFolder.empty()) {
-    return;  // keep in root directory
-  }
-
-  // Build current and destination paths.
-  std::string currentPath = root + "/" + bookName;
-
-  std::string destDir = root + "/" + selectedFolder;
-  if (!SD.exists(destDir.c_str())) {
-    SD.mkdir(destDir.c_str());
-  }
-  std::string destPath = destDir + "/" + bookName;
-
-  if (!SD.rename(currentPath.c_str(), destPath.c_str())) {
-    Serial.printf("[%lu] [BKS] Failed to move %s to %s\n", millis(), currentPath.c_str(), destPath.c_str());
-  } else {
-    Serial.printf("[%lu] [BKS] Moved %s to %s\n", millis(), currentPath.c_str(), destPath.c_str());
-  }
-}
-}
-
-// Auto-sleep timeout (10 minutes of inactivity)
-constexpr unsigned long AUTO_SLEEP_TIMEOUT_MS = 10 * 60 * 1000;
-
-void exitActivity() {
-  if (currentActivity) {
-    currentActivity->onExit();
-    delete currentActivity;
-    currentActivity = nullptr;
-  }
-}
-
-void enterNewActivity(Activity* activity) {
-  currentActivity = activity;
-  currentActivity->onEnter();
-}
-
-// Verify long press on wake-up from deep sleep
-void verifyWakeupLongPress() {
   // Give the user up to 1000ms to start holding the power button, and must hold for SETTINGS.getPowerButtonDuration()
   const auto start = millis();
   bool abort = false;
+  // Subtract the current time, because inputManager only starts counting the HeldTime from the first update()
+  // This way, we remove the time we already took to reach here from the duration,
+  // assuming the button was held until now from millis()==0 (i.e. device start time).
+  const uint16_t calibration = start;
+  const uint16_t calibratedPressDuration =
+      (calibration < SETTINGS.getPowerButtonDuration()) ? SETTINGS.getPowerButtonDuration() - calibration : 1;
 
-  inputManager.update();
-  // Verify the user has actually pressed
-  while (!inputManager.isPressed(InputManager::BTN_POWER) && millis() - start < 1000) {
+  gpio.update();
+  // Needed because inputManager.isPressed() may take up to ~500ms to return the correct state
+  while (!gpio.isPressed(HalGPIO::BTN_POWER) && millis() - start < 1000) {
     delay(10);  // only wait 10ms each iteration to not delay too much in case of short configured duration.
-    inputManager.update();
+    gpio.update();
   }
 
-  if (inputManager.isPressed(InputManager::BTN_POWER)) {
+  t2 = millis();
+  if (gpio.isPressed(HalGPIO::BTN_POWER)) {
     do {
       delay(10);
-      inputManager.update();
-    } while (inputManager.isPressed(InputManager::BTN_POWER) &&
-             inputManager.getHeldTime() < SETTINGS.getPowerButtonDuration());
-    abort = inputManager.getHeldTime() < SETTINGS.getPowerButtonDuration();
+      gpio.update();
+    } while (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getHeldTime() < calibratedPressDuration);
+    abort = gpio.getHeldTime() < calibratedPressDuration;
   } else {
     abort = true;
   }
@@ -407,370 +165,136 @@ void verifyWakeupLongPress() {
   if (abort) {
     // Button released too early. Returning to sleep.
     // IMPORTANT: Re-arm the wakeup trigger before sleeping again
-    esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
-    esp_deep_sleep_start();
+    powerManager.startDeepSleep(gpio);
   }
 }
 
 void waitForPowerRelease() {
-  inputManager.update();
-  while (inputManager.isPressed(InputManager::BTN_POWER)) {
+  gpio.update();
+  while (gpio.isPressed(HalGPIO::BTN_POWER)) {
     delay(50);
-    inputManager.update();
+    gpio.update();
   }
 }
 
 // Enter deep sleep mode
 void enterDeepSleep() {
-  exitActivity();
-  enterNewActivity(new SleepActivity(renderer, inputManager));
+  HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
+  APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
+  APP_STATE.saveToFile();
 
-  Serial.printf("[%lu] [   ] Entering deep sleep.\\n", millis());
-  delay(1000);  // Allow Serial buffer to empty and display to update
+  activityManager.goToSleep();
 
-  // Mark that we're intentionally entering deep sleep so setup() can
-  // distinguish a wake-from-sleep from a cold boot.
-  wokeFromDeepSleepFlag = true;
+  display.deepSleep();
+  LOG_DBG("MAIN", "Power button press calibration value: %lu ms", t2 - t1);
+  LOG_DBG("MAIN", "Entering deep sleep");
 
-  // Enable Wakeup on LOW (button press)
-  esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
-
-  einkDisplay.deepSleep();
-
-  // Enter Deep Sleep
-  esp_deep_sleep_start();
+  powerManager.startDeepSleep(gpio);
 }
 
-void onGoHome();
-void onGoToWebFileManager();
-void onGoToReader(const std::string& initialEpubPath) {
-  exitActivity();
-  enterNewActivity(new ReaderActivity(renderer, inputManager, initialEpubPath, onGoHome));
-}
+void setupDisplayAndFonts() {
+  display.begin();
+  renderer.begin();
+  activityManager.begin();
+  LOG_DBG("MAIN", "Display initialized");
 
-// From the home screen, prefer to resume the last-opened EPUB (if any),
-// otherwise fall back to the reader's file selection.
-void onGoToReaderHome() {
-  if (APP_STATE.openEpubPath.empty()) {
-    onGoToReader(std::string());
-  } else {
-    onGoToReader(APP_STATE.openEpubPath);
+  // Initialize font decompressor for compressed reader fonts
+  if (!fontDecompressor.init()) {
+    LOG_ERR("MAIN", "Font decompressor init failed");
   }
-}
+  renderer.setFontDecompressor(&fontDecompressor);
+  renderer.insertFont(BOOKERLY_14_FONT_ID, bookerly14FontFamily);
+#ifndef OMIT_FONTS
+  renderer.insertFont(BOOKERLY_12_FONT_ID, bookerly12FontFamily);
+  renderer.insertFont(BOOKERLY_16_FONT_ID, bookerly16FontFamily);
+  renderer.insertFont(BOOKERLY_18_FONT_ID, bookerly18FontFamily);
 
-void onGoToFileTransfer() {
-  // Repurposed as "Fetch New Books" – pull pending EPUBs from the host
-  // book_delivery_server and store them in /Books on the SD card.
-  clearLastBookSyncError();
-
-  showSyncStatus("Books: checking server...");
-
-  std::vector<PendingBook> books;
-  if (!fetchPendingBooks(books)) {
-    const char* err = getLastBookSyncError();
-    if (!err || err[0] == '\0') {
-      err = "Fetch failed";
-    }
-    std::string fullMsg = std::string("Books Error: ") + err;
-    showSyncStatus(fullMsg.c_str());
-    delay(1500);
-    onGoHome();
-    return;
-  }
-
-  if (books.empty()) {
-    showSyncStatus("No new books");
-    delay(1000);
-    onGoHome();
-    return;
-  }
-
-  const std::string booksRoot = "/Books";
-
-  const size_t totalBooks = books.size();
-  int downloaded = 0;
-  for (size_t i = 0; i < totalBooks; ++i) {
-    const auto& book = books[i];
-
-    // Show a progress bar based on how many books are completed.
-    // We show the progress *before* starting this book, so for the
-    // first book i == 0 → 0%. After the book+ack succeed, we bump to
-    // (i + 1) / total below. This makes the bar move even when there
-    // are multiple books.
-    const float beforeProgress = (totalBooks == 0) ? 0.0f : static_cast<float>(i) / static_cast<float>(totalBooks);
-    std::string label = "Downloading " + book.name + " (" + std::to_string(i + 1) + "/" +
-                        std::to_string(totalBooks) + ")";
-    showBookDownloadProgress(label, beforeProgress);
-
-    // Always download into the root /Books directory first.
-    std::string targetPath = booksRoot + "/" + book.name;
-    if (!downloadBook(book.name, targetPath)) {
-      const char* err = getLastBookSyncError();
-      if (!err || err[0] == '\0') {
-        err = "Download failed";
-      }
-      std::string fullMsg = std::string("Download failed for ") + book.name + ": " + err;
-      showSyncStatus(fullMsg.c_str());
-      delay(1500);
-      onGoHome();
-      return;
-    }
-
-    if (!ackBookDownloaded(book.name)) {
-      const char* err = getLastBookSyncError();
-      if (!err || err[0] == '\0') {
-        err = "Ack failed";
-      }
-      std::string fullMsg = std::string("Ack failed for ") + book.name + ": " + err;
-      showSyncStatus(fullMsg.c_str());
-      delay(1500);
-      onGoHome();
-      return;
-    }
-
-    // After a successful download+ack, allow the user to place the book
-    // into any top-level folder under /Books (or keep it at the root).
-    maybePromptToMoveDownloadedBook(booksRoot, book.name);
-
-    // Update the bar to reflect that this book is now fully done.
-    const float afterProgress = (totalBooks == 0)
-                                    ? 1.0f
-                                    : static_cast<float>(i + 1) / static_cast<float>(totalBooks);
-    std::string doneLabel = "Downloaded " + book.name + " (" + std::to_string(i + 1) + "/" +
-                            std::to_string(totalBooks) + ")";
-    showBookDownloadProgress(doneLabel, afterProgress);
-
-    ++downloaded;
-  }
-
-  char buf[48];
-  std::snprintf(buf, sizeof(buf), "Fetched %d new book%s", downloaded, downloaded == 1 ? "" : "s");
-  showSyncStatus(buf);
-  delay(1500);
-  onGoHome();
-}
-
-void onGoToSettings() {
-  exitActivity();
-  enterNewActivity(new SettingsActivity(renderer, inputManager, onGoHome));
-}
-namespace {
-void showSyncStatus(const char* msg) {
-  exitActivity();
-  enterNewActivity(new FullScreenMessageActivity(renderer, inputManager, msg, REGULAR));
-  delay(500);
-}
-}
-
-void onSyncProgress() {
-  // NOTE: Manual progress sync has been superseded by the Wi-Fi file manager option
-  // on the home screen. This function is kept for potential future use but is no
-  // longer wired into the UI.
-  clearLastSyncError();
-
-  if (APP_STATE.openEpubPath.empty()) {
-    showSyncStatus("Failed to Sync: No open EPUB");
-    delay(1500);
-    onGoHome();
-    return;
-  }
-
-  // Derive cache path for the current EPUB (must match Epub::getCachePath()).
-  const std::string cacheRoot = "/.crosspoint";
-  const std::string cachePath =
-      cacheRoot + "/epub_" + std::to_string(std::hash<std::string>{}(APP_STATE.openEpubPath));
-
-  if (!SD.exists(cachePath.c_str())) {
-    showSyncStatus("Failed to Sync: No cache for book");
-    delay(1500);
-    onGoHome();
-    return;
-  }
-
-  showSyncStatus("Sync: reading local progress...");
-
-  // Read local spine/page from progress.bin
-  File progressFile = SD.open((cachePath + "/progress.bin").c_str());
-  if (!progressFile) {
-    showSyncStatus("Failed to Sync: progress.bin missing");
-    delay(1500);
-    onGoHome();
-    return;
-  }
-
-  uint8_t data[4];
-  if (progressFile.read(data, 4) != 4) {
-    progressFile.close();
-    showSyncStatus("Failed to Sync: progress.bin read error");
-    delay(1500);
-    onGoHome();
-    return;
-  }
-  progressFile.close();
-
-  int16_t localSpine = static_cast<int16_t>(static_cast<uint16_t>(data[0]) |
-                                            (static_cast<uint16_t>(data[1]) << 8));
-  int16_t localPage = static_cast<int16_t>(static_cast<uint16_t>(data[2]) |
-                                           (static_cast<uint16_t>(data[3]) << 8));
-
-  // First, try to pull remote progress and, if it is ahead, apply it locally.
-  int16_t remoteSpine = 0;
-  int16_t remotePage = 0;
-  showSyncStatus("Sync: pulling remote...");
-  if (fetchRemoteProgress(APP_STATE.openEpubPath, remoteSpine, remotePage)) {
-    const bool remoteAhead =
-        (remoteSpine > localSpine) || (remoteSpine == localSpine && remotePage > localPage);
-    if (remoteAhead) {
-      Serial.printf("[%lu] [SYN] Applying remote progress spine=%d, page=%d over local spine=%d, page=%d\n",
-                    millis(), remoteSpine, remotePage, localSpine, localPage);
-
-      // Overwrite local progress.bin with the remote position so the reader
-      // will resume from the remote location on next open.
-      File out = SD.open((cachePath + "/progress.bin").c_str(), FILE_WRITE);
-      if (out) {
-        uint8_t outData[4];
-        outData[0] = static_cast<uint16_t>(remoteSpine) & 0xFF;
-        outData[1] = (static_cast<uint16_t>(remoteSpine) >> 8) & 0xFF;
-        outData[2] = static_cast<uint16_t>(remotePage) & 0xFF;
-        outData[3] = (static_cast<uint16_t>(remotePage) >> 8) & 0xFF;
-        out.write(outData, 4);
-        out.close();
-
-        localSpine = remoteSpine;
-        localPage = remotePage;
-      } else {
-        Serial.printf("[%lu] [SYN] Failed to reopen progress.bin for write when applying remote progress\n",
-                      millis());
-      }
-    } else {
-      Serial.printf("[%lu] [SYN] Remote progress is not ahead; keeping local spine=%d, page=%d\n", millis(),
-                    localSpine, localPage);
-    }
-  } else {
-    // Remote pull failed; show last sync error from SyncClient.
-    const char* err = getLastSyncError();
-    if (!err || err[0] == '\0') {
-      err = "Remote pull failed";
-    }
-    std::string fullMsg = std::string("Failed to Sync: ") + err;
-    showSyncStatus(fullMsg.c_str());
-    delay(1500);
-    onGoHome();
-    return;
-  }
-
-  // Compute approximate percentage for the (possibly updated) local position.
-  uint8_t percentage = 0;
-  if (!getCachedReadingProgress(APP_STATE.openEpubPath, percentage)) {
-    Serial.printf("[%lu] [SYN] Could not compute approximate percentage for %s; defaulting to 0%%\n", millis(),
-                  APP_STATE.openEpubPath.c_str());
-  }
-
-  // Finally, push the (potentially updated) progress to the sync server.
-  showSyncStatus("Sync: pushing local...");
-  const bool ok = syncProgress(APP_STATE.openEpubPath, percentage, localSpine, localPage);
-  if (!ok) {
-    const char* err = getLastSyncError();
-    if (!err || err[0] == '\0') {
-      err = "Push failed";
-    }
-    std::string fullMsg = std::string("Failed to Sync: ") + err;
-    showSyncStatus(fullMsg.c_str());
-    delay(1500);
-    onGoHome();
-    return;
-  }
-
-  showSyncStatus("Sync complete");
-  delay(1000);
-  onGoHome();
-}
-
-void onGoToWebFileManager() {
-  exitActivity();
-  enterNewActivity(new CrossPointWebServerActivity(renderer, inputManager, onGoHome));
-}
-
-void onGoHome() {
-  exitActivity();
-
-  // Derive a display name for the currently open EPUB, if any.
-  std::string epubName;
-  if (!APP_STATE.openEpubPath.empty()) {
-    auto pos = APP_STATE.openEpubPath.find_last_of("/");
-    if (pos == std::string::npos) {
-      epubName = APP_STATE.openEpubPath;
-    } else {
-      epubName = APP_STATE.openEpubPath.substr(pos + 1);
-    }
-
-    // Strip .epub extension if present for display purposes
-    const std::string suffix = ".epub";
-    if (epubName.size() >= suffix.size() &&
-        epubName.compare(epubName.size() - suffix.size(), suffix.size(), suffix) == 0) {
-      epubName.erase(epubName.size() - suffix.size());
-    }
-  }
-
-  auto onBrowseFiles = []() { onGoToReader(std::string()); };
-
-  enterNewActivity(new HomeActivity(renderer, inputManager, onGoToReaderHome, onBrowseFiles, onGoToWebFileManager,
-                                    onGoToSettings, onGoToFileTransfer, epubName));
+  renderer.insertFont(NOTOSANS_12_FONT_ID, notosans12FontFamily);
+  renderer.insertFont(NOTOSANS_14_FONT_ID, notosans14FontFamily);
+  renderer.insertFont(NOTOSANS_16_FONT_ID, notosans16FontFamily);
+  renderer.insertFont(NOTOSANS_18_FONT_ID, notosans18FontFamily);
+  renderer.insertFont(OPENDYSLEXIC_8_FONT_ID, opendyslexic8FontFamily);
+  renderer.insertFont(OPENDYSLEXIC_10_FONT_ID, opendyslexic10FontFamily);
+  renderer.insertFont(OPENDYSLEXIC_12_FONT_ID, opendyslexic12FontFamily);
+  renderer.insertFont(OPENDYSLEXIC_14_FONT_ID, opendyslexic14FontFamily);
+#endif  // OMIT_FONTS
+  renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
+  renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
+  renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
+  LOG_DBG("MAIN", "Fonts setup");
 }
 
 void setup() {
-  Serial.begin(115200);
+  t1 = millis();
 
-  Serial.printf("[%lu] [   ] Starting CrossPoint version " CROSSPOINT_VERSION "\n", millis());
+  gpio.begin();
+  powerManager.begin();
 
-  inputManager.begin();
-  // Initialize pins
-  pinMode(BAT_GPIO0, INPUT);
-
-  // Initialize SPI with custom pins
-  SPI.begin(EPD_SCLK, SD_SPI_MISO, EPD_MOSI, EPD_CS);
+  // Only start serial if USB connected
+  if (gpio.isUsbConnected()) {
+    Serial.begin(115200);
+    // Wait up to 3 seconds for Serial to be ready to catch early logs
+    unsigned long start = millis();
+    while (!Serial && (millis() - start) < 3000) {
+      delay(10);
+    }
+  }
 
   // SD Card Initialization
-  if (!SD.begin(SD_SPI_CS, SPI, SPI_FQ)) {
-    Serial.printf("[%lu] [   ] SD card initialization failed\n", millis());
-    exitActivity();
-    enterNewActivity(new FullScreenMessageActivity(renderer, inputManager, "SD card error", BOLD));
+  // We need 6 open files concurrently when parsing a new chapter
+  if (!Storage.begin()) {
+    LOG_ERR("MAIN", "SD card initialization failed");
+    setupDisplayAndFonts();
+    activityManager.goToFullScreenMessage("SD card error", EpdFontFamily::BOLD);
     return;
   }
 
   SETTINGS.loadFromFile();
+  I18N.loadSettings();
+  KOREADER_STORE.loadFromFile();
+  UITheme::getInstance().reload();
+  ButtonNavigator::setMappedInputManager(mappedInputManager);
 
-  // verify power button press duration after we've read settings.
-  verifyWakeupLongPress();
-
-  // Initialize display
-  einkDisplay.begin();
-  Serial.printf("[%lu] [   ] Display initialized\\n", millis());
-
-  renderer.insertFont(READER_FONT_ID, bookerlyFontFamily);
-  renderer.insertFont(UI_FONT_ID, ubuntuFontFamily);
-  renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
-  Serial.printf("[%lu] [   ] Fonts setup\\n", millis());
-
-  // Determine whether we're resuming from deep sleep or doing a cold boot.
-  // We rely primarily on the RTC flag set just before esp_deep_sleep_start(),
-  // which is robust across Arduino/ESP32 core versions.
-  const bool wokeFromDeepSleep = wokeFromDeepSleepFlag;
-  // Clear the flag so a subsequent cold reset doesn't look like a resume.
-  wokeFromDeepSleepFlag = false;
-
-  exitActivity();
-  // Only show the boot screen on cold boot; when resuming from sleep, jump
-  // straight to the last state (home or reader) without flashing the logo.
-  if (!wokeFromDeepSleep) {
-    enterNewActivity(new BootActivity(renderer, inputManager));
+  switch (gpio.getWakeupReason()) {
+    case HalGPIO::WakeupReason::PowerButton:
+      // For normal wakeups, verify power button press duration
+      LOG_DBG("MAIN", "Verifying power button press duration");
+      verifyPowerButtonDuration();
+      break;
+    case HalGPIO::WakeupReason::AfterUSBPower:
+      // If USB power caused a cold boot, go back to sleep
+      LOG_DBG("MAIN", "Wakeup reason: After USB Power");
+      powerManager.startDeepSleep(gpio);
+      break;
+    case HalGPIO::WakeupReason::AfterFlash:
+      // After flashing, just proceed to boot
+    case HalGPIO::WakeupReason::Other:
+    default:
+      break;
   }
 
+  // First serial output only here to avoid timing inconsistencies for power button press duration verification
+  LOG_DBG("MAIN", "Starting CrossPoint version " CROSSPOINT_VERSION);
+
+  setupDisplayAndFonts();
+
+  activityManager.goToBoot();
+
   APP_STATE.loadFromFile();
-  if (APP_STATE.openEpubPath.empty()) {
-    onGoHome();
+  RECENT_BOOKS.loadFromFile();
+
+  // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
+  // crashed (indicated by readerActivityLoadCount > 0)
+  if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
+      mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
+    activityManager.goHome();
   } else {
-    onGoToReader(APP_STATE.openEpubPath);
+    // Clear app state to avoid getting into a boot loop if the epub doesn't load
+    const auto path = APP_STATE.openEpubPath;
+    APP_STATE.openEpubPath = "";
+    APP_STATE.readerActivityLoadCount++;
+    APP_STATE.saveToFile();
+    activityManager.goToReader(path);
   }
 
   // Ensure we're not still holding the power button before leaving setup
@@ -778,63 +302,101 @@ void setup() {
 }
 
 void loop() {
-  static unsigned long lastLoopTime = 0;
   static unsigned long maxLoopDuration = 0;
-
-  unsigned long loopStartTime = millis();
-
+  const unsigned long loopStartTime = millis();
   static unsigned long lastMemPrint = 0;
+
+  gpio.update();
+
+  renderer.setFadingFix(SETTINGS.fadingFix);
+
   if (Serial && millis() - lastMemPrint >= 10000) {
-    Serial.printf("[%lu] [MEM] Free: %d bytes, Total: %d bytes, Min Free: %d bytes\n", millis(), ESP.getFreeHeap(),
-                  ESP.getHeapSize(), ESP.getMinFreeHeap());
+    LOG_INF("MEM", "Free: %d bytes, Total: %d bytes, Min Free: %d bytes, MaxAlloc: %d bytes", ESP.getFreeHeap(),
+            ESP.getHeapSize(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap());
     lastMemPrint = millis();
   }
 
-  inputManager.update();
-
-  // Check for any user activity (button press or release)
-  static unsigned long lastActivityTime = millis();
-  if (inputManager.wasAnyPressed() || inputManager.wasAnyReleased()) {
-    lastActivityTime = millis();  // Reset inactivity timer
-  }
-
-  if (millis() - lastActivityTime >= AUTO_SLEEP_TIMEOUT_MS) {
-    Serial.printf("[%lu] [SLP] Auto-sleep triggered after %lu ms of inactivity\n", millis(), AUTO_SLEEP_TIMEOUT_MS);
-    enterDeepSleep();
-    // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
-    return;
-  }
-
-  if (inputManager.wasReleased(InputManager::BTN_POWER) &&
-      inputManager.getHeldTime() > SETTINGS.getPowerButtonDuration()) {
-    enterDeepSleep();
-    // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
-    return;
-  }
-
-  unsigned long activityStartTime = millis();
-  if (currentActivity) {
-    currentActivity->loop();
-  }
-  unsigned long activityDuration = millis() - activityStartTime;
-
-  unsigned long loopDuration = millis() - loopStartTime;
-  if (loopDuration > maxLoopDuration) {
-    maxLoopDuration = loopDuration;
-    if (maxLoopDuration > 50) {
-      Serial.printf("[%lu] [LOOP] New max loop duration: %lu ms (activity: %lu ms)\n", millis(), maxLoopDuration,
-                    activityDuration);
+  // Handle incoming serial commands,
+  // nb: we use logSerial from logging to avoid deprecation warnings
+  if (logSerial.available() > 0) {
+    String line = logSerial.readStringUntil('\n');
+    if (line.startsWith("CMD:")) {
+      String cmd = line.substring(4);
+      cmd.trim();
+      if (cmd == "SCREENSHOT") {
+        logSerial.printf("SCREENSHOT_START:%d\n", HalDisplay::BUFFER_SIZE);
+        uint8_t* buf = display.getFrameBuffer();
+        logSerial.write(buf, HalDisplay::BUFFER_SIZE);
+        logSerial.printf("SCREENSHOT_END\n");
+      }
     }
   }
 
-  lastLoopTime = loopStartTime;
+  // Check for any user activity (button press or release) or active background work
+  static unsigned long lastActivityTime = millis();
+  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || activityManager.preventAutoSleep()) {
+    lastActivityTime = millis();         // Reset inactivity timer
+    powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
+  }
+
+  static bool screenshotButtonsReleased = true;
+  if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.isPressed(HalGPIO::BTN_DOWN)) {
+    if (screenshotButtonsReleased) {
+      screenshotButtonsReleased = false;
+      {
+        RenderLock lock;
+        ScreenshotUtil::takeScreenshot(renderer);
+      }
+    }
+    return;
+  } else {
+    screenshotButtonsReleased = true;
+  }
+
+  const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
+  if (millis() - lastActivityTime >= sleepTimeoutMs) {
+    LOG_DBG("SLP", "Auto-sleep triggered after %lu ms of inactivity", sleepTimeoutMs);
+    enterDeepSleep();
+    // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
+    return;
+  }
+
+  if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getHeldTime() > SETTINGS.getPowerButtonDuration()) {
+    // If the screenshot combination is potentially being pressed, don't sleep
+    if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
+      return;
+    }
+    enterDeepSleep();
+    // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
+    return;
+  }
+
+  const unsigned long activityStartTime = millis();
+  activityManager.loop();
+  const unsigned long activityDuration = millis() - activityStartTime;
+
+  const unsigned long loopDuration = millis() - loopStartTime;
+  if (loopDuration > maxLoopDuration) {
+    maxLoopDuration = loopDuration;
+    if (maxLoopDuration > 50) {
+      LOG_DBG("LOOP", "New max loop duration: %lu ms (activity: %lu ms)", maxLoopDuration, activityDuration);
+    }
+  }
 
   // Add delay at the end of the loop to prevent tight spinning
   // When an activity requests skip loop delay (e.g., webserver running), use yield() for faster response
   // Otherwise, use longer delay to save power
-  if (currentActivity && currentActivity->skipLoopDelay()) {
-    yield();  // Give FreeRTOS a chance to run tasks, but return immediately
+  if (activityManager.skipLoopDelay()) {
+    powerManager.setPowerSaving(false);  // Make sure we're at full performance when skipLoopDelay is requested
+    yield();                             // Give FreeRTOS a chance to run tasks, but return immediately
   } else {
-    delay(10);  // Normal delay when no activity requires fast response
+    if (millis() - lastActivityTime >= HalPowerManager::IDLE_POWER_SAVING_MS) {
+      // If we've been inactive for a while, increase the delay to save power
+      powerManager.setPowerSaving(true);  // Lower CPU frequency after extended inactivity
+      delay(50);
+    } else {
+      // Short delay to prevent tight loop while still being responsive
+      delay(10);
+    }
   }
 }

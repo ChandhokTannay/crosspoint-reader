@@ -2,13 +2,15 @@
 
 #include <GfxRenderer.h>
 
-#include "config.h"
+#include "fontIds.h"
 
 void FullScreenMessageActivity::onEnter() {
-  const auto height = renderer.getLineHeight(UI_FONT_ID);
-  const auto top = (GfxRenderer::getScreenHeight() - height) / 2;
+  Activity::onEnter();
+
+  const auto height = renderer.getLineHeight(UI_10_FONT_ID);
+  const auto top = (renderer.getScreenHeight() - height) / 2;
 
   renderer.clearScreen();
-  renderer.drawCenteredText(UI_FONT_ID, top, text.c_str(), true, style);
+  renderer.drawCenteredText(UI_10_FONT_ID, top, text.c_str(), true, style);
   renderer.displayBuffer(refreshMode);
 }
