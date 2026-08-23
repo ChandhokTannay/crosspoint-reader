@@ -277,7 +277,7 @@ void FileBrowserActivity::onEnter() {
   thumbnailQueue = xQueueCreate(THUMBNAIL_QUEUE_LENGTH, sizeof(ThumbnailRequest));
   if (thumbnailQueue != nullptr) {
     xTaskCreate(&FileBrowserActivity::thumbnailTaskTrampoline, "ThumbnailLoaderTask",
-                8192,  // Stack size (large enough for EPUB metadata parsing)
+                16384,  // Full cache rebuild + JPEG/PNG cover decode run on this stack
                 this, 1, &thumbnailTaskHandle);
   }
 
@@ -314,12 +314,6 @@ void FileBrowserActivity::clearFileMetadata(const std::string& fullPath) {
 
 void FileBrowserActivity::loop() {
   const bool inBooksTree = isInBooksTree();
-
-  // While thumbnails are still loading for the current library page, ignore
-  // navigation input so we don't leave the grid in a half-loaded state.
-  if (inBooksTree && pendingThumbnailRequests > 0) {
-    return;
-  }
 
   // Long press BACK (1s+) goes to root folder
   if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= GO_HOME_MS &&
@@ -379,8 +373,10 @@ void FileBrowserActivity::loop() {
           // Wipe the book's cache dir (metadata, embedded 2bpp blob, generated
           // cover BMPs and failure stubs) so everything is rebuilt fresh.
           LOG_DBG("FileBrowser", "Re-processing book: %s", fullPath.c_str());
-          clearFileMetadata(fullPath);
+          // Drain the queue first so the worker isn't building into the
+          // cache dir while we delete it.
           clearThumbnailCache();
+          clearFileMetadata(fullPath);
           requestUpdate(true);
         } else if (menu->action == BookActionsActivity::DELETE) {
           std::string heading = tr(STR_DELETE) + std::string("? ");
@@ -502,6 +498,12 @@ void FileBrowserActivity::render(RenderLock&&) {
                                             files.empty() ? "" : tr(STR_OPEN), files.empty() ? "" : tr(STR_DIR_UP),
                                             files.empty() ? "" : tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+
+  // Cover thumbnails are still being extracted/generated for this page —
+  // show a loading popup so the blocked navigation doesn't read as a freeze.
+  if (inBooksTree && pendingThumbnailRequests > 0) {
+    GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  }
 
   renderer.displayBuffer();
 }
