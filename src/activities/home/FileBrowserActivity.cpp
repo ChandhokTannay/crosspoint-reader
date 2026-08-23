@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "../util/BookActionsActivity.h"
 #include "../util/ConfirmationActivity.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
@@ -34,6 +35,11 @@ constexpr int GRID_COVER_HEIGHT = 140;
 constexpr size_t MIN_VALID_BMP_SIZE = 54;
 
 constexpr char COMPLETED_BOOKS_FILE[] = "/.crosspoint/completed_books.txt";
+}  // namespace
+
+std::string getFileName(std::string filename);
+
+namespace {
 
 // Count how many EPUB files are directly inside a given series directory.
 // dirEntry is a single path component relative to basepath and typically
@@ -335,12 +341,12 @@ void FileBrowserActivity::loop() {
     bool isDirectory = (entry.back() == '/');
 
     if (mappedInput.getHeldTime() >= GO_HOME_MS && !isDirectory) {
-      // --- LONG PRESS ACTION: DELETE FILE ---
+      // --- LONG PRESS ACTION: BOOK MENU (re-process / delete) ---
       std::string cleanBasePath = basepath;
       if (cleanBasePath.back() != '/') cleanBasePath += "/";
       const std::string fullPath = cleanBasePath + entry;
 
-      auto handler = [this, fullPath](const ActivityResult& res) {
+      auto deleteHandler = [this, fullPath](const ActivityResult& res) {
         if (!res.isCancelled) {
           LOG_DBG("FileBrowser", "Attempting to delete: %s", fullPath.c_str());
           clearFileMetadata(fullPath);
@@ -364,9 +370,27 @@ void FileBrowserActivity::loop() {
         }
       };
 
-      std::string heading = tr(STR_DELETE) + std::string("? ");
+      auto menuHandler = [this, fullPath, entry, deleteHandler](const ActivityResult& res) {
+        if (res.isCancelled) return;
+        const auto* menu = std::get_if<MenuResult>(&res.data);
+        if (!menu) return;
 
-      startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, entry), handler);
+        if (menu->action == BookActionsActivity::REPROCESS) {
+          // Wipe the book's cache dir (metadata, embedded 2bpp blob, generated
+          // cover BMPs and failure stubs) so everything is rebuilt fresh.
+          LOG_DBG("FileBrowser", "Re-processing book: %s", fullPath.c_str());
+          clearFileMetadata(fullPath);
+          clearThumbnailCache();
+          requestUpdate(true);
+        } else if (menu->action == BookActionsActivity::DELETE) {
+          std::string heading = tr(STR_DELETE) + std::string("? ");
+          startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, entry),
+                                 deleteHandler);
+        }
+      };
+
+      startActivityForResult(std::make_unique<BookActionsActivity>(renderer, mappedInput, getFileName(entry)),
+                             menuHandler);
       return;
     } else {
       // --- SHORT PRESS ACTION: OPEN/NAVIGATE ---
