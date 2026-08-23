@@ -66,6 +66,10 @@ class FileBrowserActivity final : public Activity {
   SemaphoreHandle_t thumbnailCacheMutex = nullptr;
   QueueHandle_t thumbnailQueue = nullptr;
   TaskHandle_t thumbnailTaskHandle = nullptr;
+  // Cooperative shutdown: the worker must never be force-killed mid SD
+  // operation (it can die holding the storage mutex and wedge the device).
+  volatile bool workerExitRequested = false;
+  volatile bool workerExited = false;
   // Number of thumbnail requests that have been enqueued but not yet processed.
   mutable volatile int pendingThumbnailRequests = 0;
 
@@ -80,7 +84,7 @@ class FileBrowserActivity final : public Activity {
   void renderBooksGrid(int pageWidth, int pageHeight);
 
   static void thumbnailTaskTrampoline(void* param);
-  [[noreturn]] void thumbnailTaskLoop();
+  void thumbnailTaskLoop();
   bool getThumbnailFromCache(const std::string& fullPath, uint8_t** outData, uint16_t* outWidth, uint16_t* outHeight,
                              std::string* outBmpPath) const;
   void enqueueThumbnailRequest(const std::string& fullPath) const;

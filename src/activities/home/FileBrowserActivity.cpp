@@ -274,6 +274,8 @@ void FileBrowserActivity::onEnter() {
   pendingThumbnailRequests = 0;
 
   thumbnailCacheMutex = xSemaphoreCreateMutex();
+  workerExitRequested = false;
+  workerExited = false;
   thumbnailQueue = xQueueCreate(THUMBNAIL_QUEUE_LENGTH, sizeof(ThumbnailRequest));
   if (thumbnailQueue != nullptr) {
     xTaskCreate(&FileBrowserActivity::thumbnailTaskTrampoline, "ThumbnailLoaderTask",
@@ -287,7 +289,14 @@ void FileBrowserActivity::onEnter() {
 void FileBrowserActivity::onExit() {
   Activity::onExit();
   if (thumbnailTaskHandle) {
-    vTaskDelete(thumbnailTaskHandle);
+    // Ask the worker to exit at a safe point and wait for it. Killing it
+    // mid SD operation can orphan the storage mutex and wedge the device;
+    // if a full book rebuild is in flight this wait can take a while, but
+    // correctness beats speed here.
+    workerExitRequested = true;
+    while (!workerExited) {
+      vTaskDelay(20 / portTICK_PERIOD_MS);
+    }
     thumbnailTaskHandle = nullptr;
   }
   if (thumbnailQueue) {
@@ -774,15 +783,16 @@ void FileBrowserActivity::thumbnailTaskTrampoline(void* param) {
   self->thumbnailTaskLoop();
 }
 
-[[noreturn]] void FileBrowserActivity::thumbnailTaskLoop() {
-  while (true) {
+void FileBrowserActivity::thumbnailTaskLoop() {
+  while (!workerExitRequested) {
     if (!thumbnailQueue) {
       vTaskDelay(100 / portTICK_PERIOD_MS);
       continue;
     }
 
     ThumbnailRequest req{};
-    if (xQueueReceive(thumbnailQueue, &req, portMAX_DELAY) == pdTRUE) {
+    // Bounded wait so the exit flag is checked regularly while idle.
+    if (xQueueReceive(thumbnailQueue, &req, 200 / portTICK_PERIOD_MS) == pdTRUE) {
       std::string fullPath(req.path);
       // Warm the cache; if a thumbnail was loaded, trigger a re-render so the
       // newly available image can be drawn without requiring user navigation.
@@ -792,13 +802,16 @@ void FileBrowserActivity::thumbnailTaskTrampoline(void* param) {
       if (pendingThumbnailRequests > 0) {
         --pendingThumbnailRequests;
         if (pendingThumbnailRequests == 0) {
-          // Last outstanding request: re-render so navigation resumes with
-          // every cover for the page in place.
+          // Last outstanding request: re-render so every cover for the
+          // page lands together.
           requestUpdate();
         }
       }
     }
   }
+
+  workerExited = true;
+  vTaskDelete(nullptr);
 }
 
 bool FileBrowserActivity::getThumbnailFromCache(const std::string& fullPath, uint8_t** outData, uint16_t* outWidth,
