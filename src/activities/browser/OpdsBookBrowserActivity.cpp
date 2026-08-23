@@ -321,7 +321,9 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book) {
   if (!book.author.empty()) {
     baseName += " - " + book.author;
   }
-  std::string filename = "/" + StringUtils::sanitizeFilename(baseName) + ".epub";
+  // Save into the library tree so downloads show up in the /Books cover grid
+  Storage.mkdir("/Books");
+  std::string filename = "/Books/" + StringUtils::sanitizeFilename(baseName) + ".epub";
 
   LOG_DBG("OPDS", "Downloading: %s -> %s", downloadUrl.c_str(), filename.c_str());
 
