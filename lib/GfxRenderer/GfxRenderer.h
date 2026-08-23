@@ -71,10 +71,6 @@ class GfxRenderer {
   // Fading fix control
   void setFadingFix(const bool enabled) { fadingFix = enabled; }
 
-  // Orientation control (affects logical width/height and coordinate transforms)
-  static void setOrientation(Orientation o) { orientation = o; }
-  static Orientation getOrientation() { return orientation; }
-
   // Screen ops
   int getScreenWidth() const;
   int getScreenHeight() const;

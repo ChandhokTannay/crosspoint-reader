@@ -22,15 +22,12 @@ bool Epub::findContentOpfFile(std::string* contentOpfFile) const {
     return false;
   }
 
-  const uint32_t heapBefore = ESP.getFreeHeap();
   // Container.xml in an EPUB should be tiny (a few KB). If it's very
-  // large or heap is already low, avoid stressing the XML stack by
-  // skipping metadata-only parsing for this book.
+  // large, avoid stressing the XML stack by skipping parsing for this book.
   const size_t kMaxContainerSize = 16 * 1024;  // 16KB
-  if (containerSize > kMaxContainerSize || heapBefore < 80000) {
-    Serial.printf("[%lu] [EBP] Skipping container.xml parse: size=%u, heap=%u for %s\n",
-                  millis(), static_cast<unsigned>(containerSize), heapBefore,
-                  filepath.c_str());
+  if (containerSize > kMaxContainerSize) {
+    LOG_ERR("EBP", "Skipping container.xml parse: size=%u for %s", static_cast<unsigned>(containerSize),
+            filepath.c_str());
     return false;
   }
 
