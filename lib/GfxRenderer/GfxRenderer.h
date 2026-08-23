@@ -98,8 +98,10 @@ class GfxRenderer {
                        bool roundBottomLeft, bool roundBottomRight, Color color) const;
   void drawImage(const uint8_t bitmap[], int x, int y, int width, int height) const;
   void drawIcon(const uint8_t bitmap[], int x, int y, int width, int height) const;
+  // invert draws the bitmap as a negative (ink pixels painted white instead of
+  // black) for rendering onto a dark selection highlight.
   void drawBitmap(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight, float cropX = 0,
-                  float cropY = 0) const;
+                  float cropY = 0, bool invert = false) const;
   void drawBitmap1Bit(const Bitmap& bitmap, int x, int y, int maxWidth, int maxHeight) const;
   void fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state = true) const;
   // Draw a 2bpp image stored in row-major order, 4 pixels per byte (MSB first).

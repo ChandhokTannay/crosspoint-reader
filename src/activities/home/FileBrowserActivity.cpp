@@ -590,7 +590,9 @@ void FileBrowserActivity::renderBooksGrid(const int pageWidth, const int pageHei
           thumbHeight = static_cast<uint16_t>(std::min(bitmap.getHeight(), cellHeight - 2 * paddingY));
           const int coverX = x + (cellWidth - static_cast<int>(thumbWidth)) / 2;
           const int coverY = y + paddingY;
-          renderer.drawBitmap(bitmap, coverX, coverY, thumbWidth, thumbHeight, 0, 0);
+          // Draw as a negative when the card is selected so the cover stays
+          // visible on the dark highlight background.
+          renderer.drawBitmap(bitmap, coverX, coverY, thumbWidth, thumbHeight, 0, 0, selected);
         }
         f.close();
       }

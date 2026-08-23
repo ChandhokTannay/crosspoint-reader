@@ -568,7 +568,7 @@ void GfxRenderer::drawIcon(const uint8_t bitmap[], const int x, const int y, con
 }
 
 void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, const int maxWidth, const int maxHeight,
-                             const float cropX, const float cropY) const {
+                             const float cropX, const float cropY, const bool invert) const {
   // For 1-bit bitmaps, use optimized 1-bit rendering path (no crop support for 1-bit)
   if (bitmap.is1Bit() && cropX == 0.0f && cropY == 0.0f) {
     drawBitmap1Bit(bitmap, x, y, maxWidth, maxHeight);
@@ -649,7 +649,8 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
       const uint8_t val = outputRow[bmpX / 4] >> (6 - ((bmpX * 2) % 8)) & 0x3;
 
       if (renderMode == BW && val < 3) {
-        drawPixel(screenX, screenY);
+        // Same ink pattern, drawn white when inverted (negative on dark background)
+        drawPixel(screenX, screenY, !invert);
       } else if (renderMode == GRAYSCALE_MSB && (val == 1 || val == 2)) {
         drawPixel(screenX, screenY, false);
       } else if (renderMode == GRAYSCALE_LSB && val == 1) {
