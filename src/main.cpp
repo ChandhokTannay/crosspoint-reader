@@ -15,6 +15,7 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "KOReaderSleepSync.h"
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
@@ -184,6 +185,10 @@ void enterDeepSleep() {
   APP_STATE.saveToFile();
 
   activityManager.goToSleep();
+
+  // Best-effort KOReader progress push (guarded by the Sync-on-Sleep
+  // setting); runs behind the already-rendered sleep screen.
+  KOReaderSleepSync::attempt();
 
   display.deepSleep();
   LOG_DBG("MAIN", "Power button press calibration value: %lu ms", t2 - t1);
