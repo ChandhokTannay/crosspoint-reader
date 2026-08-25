@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "KOReaderAuthActivity.h"
+#include "CrossPointSettings.h"
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "activities/util/KeyboardEntryActivity.h"
@@ -13,9 +14,10 @@
 #include "fontIds.h"
 
 namespace {
-constexpr int MENU_ITEMS = 5;
-const StrId menuNames[MENU_ITEMS] = {StrId::STR_USERNAME, StrId::STR_PASSWORD, StrId::STR_SYNC_SERVER_URL,
-                                     StrId::STR_DOCUMENT_MATCHING, StrId::STR_AUTHENTICATE};
+constexpr int MENU_ITEMS = 7;
+const StrId menuNames[MENU_ITEMS] = {StrId::STR_USERNAME,      StrId::STR_PASSWORD,     StrId::STR_SYNC_SERVER_URL,
+                                     StrId::STR_DOCUMENT_MATCHING, StrId::STR_SYNC_ON_SLEEP, StrId::STR_SYNC_ON_OPEN,
+                                     StrId::STR_AUTHENTICATE};
 }  // namespace
 
 void KOReaderSettingsActivity::onEnter() {
@@ -102,6 +104,16 @@ void KOReaderSettingsActivity::handleSelection() {
     KOREADER_STORE.saveToFile();
     requestUpdate();
   } else if (selectedIndex == 4) {
+    // Sync on sleep - toggle
+    SETTINGS.syncOnSleep = SETTINGS.syncOnSleep ? 0 : 1;
+    SETTINGS.saveToFile();
+    requestUpdate();
+  } else if (selectedIndex == 5) {
+    // Sync on open - toggle
+    SETTINGS.syncOnOpen = SETTINGS.syncOnOpen ? 0 : 1;
+    SETTINGS.saveToFile();
+    requestUpdate();
+  } else if (selectedIndex == 6) {
     // Authenticate
     if (!KOREADER_STORE.hasCredentials()) {
       // Can't authenticate without credentials - just show message briefly
@@ -140,6 +152,10 @@ void KOReaderSettingsActivity::render(RenderLock&&) {
           return KOREADER_STORE.getMatchMethod() == DocumentMatchMethod::FILENAME ? std::string(tr(STR_FILENAME))
                                                                                   : std::string(tr(STR_BINARY));
         } else if (index == 4) {
+          return std::string(SETTINGS.syncOnSleep ? tr(STR_ON) : tr(STR_OFF));
+        } else if (index == 5) {
+          return std::string(SETTINGS.syncOnOpen ? tr(STR_ON) : tr(STR_OFF));
+        } else if (index == 6) {
           return KOREADER_STORE.hasCredentials() ? "" : std::string("[") + tr(STR_SET_CREDENTIALS_FIRST) + "]";
         }
         return std::string(tr(STR_NOT_SET));
