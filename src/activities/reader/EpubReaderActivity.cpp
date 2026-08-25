@@ -115,6 +115,9 @@ void applyReaderOrientation(GfxRenderer& renderer, const uint8_t orientation) {
 void EpubReaderActivity::onEnter() {
   Activity::onEnter();
 
+  // Sync-on-open: check the server for further progress once the book is up
+  pendingAutoSync = SETTINGS.syncOnOpen && KOREADER_STORE.hasCredentials();
+
   if (!epub) {
     return;
   }
@@ -175,6 +178,25 @@ void EpubReaderActivity::loop() {
   if (!epub) {
     // Should never happen
     finish();
+    return;
+  }
+
+  if (pendingAutoSync && section) {
+    pendingAutoSync = false;
+    startActivityForResult(
+        std::make_unique<KOReaderSyncActivity>(renderer, mappedInput, epub, epub->getPath(), currentSpineIndex,
+                                               section->currentPage, section->pageCount, /*autoMode=*/true),
+        [this](const ActivityResult& result) {
+          if (!result.isCancelled) {
+            const auto& sync = std::get<SyncResult>(result.data);
+            if (currentSpineIndex != sync.spineIndex || (section && section->currentPage != sync.page)) {
+              RenderLock lock(*this);
+              currentSpineIndex = sync.spineIndex;
+              nextPageNumber = sync.page;
+              section.reset();
+            }
+          }
+        });
     return;
   }
 

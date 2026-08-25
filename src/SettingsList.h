@@ -108,6 +108,8 @@ inline const std::vector<SettingInfo>& getSettingsList() {
           "koMatchMethod", StrId::STR_KOREADER_SYNC),
       SettingInfo::Toggle(StrId::STR_SYNC_ON_SLEEP, &CrossPointSettings::syncOnSleep, "syncOnSleep",
                           StrId::STR_KOREADER_SYNC),
+      SettingInfo::Toggle(StrId::STR_SYNC_ON_OPEN, &CrossPointSettings::syncOnOpen, "syncOnOpen",
+                          StrId::STR_KOREADER_SYNC),
 
       // --- OPDS Browser (web-only, uses CrossPointSettings char arrays) ---
       SettingInfo::String(StrId::STR_OPDS_SERVER_URL, SETTINGS.opdsServerUrl, sizeof(SETTINGS.opdsServerUrl),

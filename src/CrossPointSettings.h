@@ -192,6 +192,8 @@ class CrossPointSettings {
   uint8_t fadingFix = 0;
   // Push KOReader progress when sleeping from the reader (0 = off)
   uint8_t syncOnSleep = 0;
+  // Check the sync server for further progress when opening a book (0 = off)
+  uint8_t syncOnOpen = 0;
   // Use book's embedded CSS styles for EPUB rendering (1 = enabled, 0 = disabled)
   uint8_t embeddedStyle = 1;
 

@@ -110,6 +110,10 @@ void KOReaderSyncActivity::performSync() {
   const auto result = KOReaderSyncClient::getProgress(documentHash, remoteProgress);
 
   if (result == KOReaderSyncClient::NOT_FOUND) {
+    if (autoMode) {
+      autoFinish = true;
+      return;
+    }
     // No remote progress - offer to upload
     {
       RenderLock lock(*this);
@@ -121,6 +125,10 @@ void KOReaderSyncActivity::performSync() {
   }
 
   if (result != KOReaderSyncClient::OK) {
+    if (autoMode) {
+      autoFinish = true;
+      return;
+    }
     {
       RenderLock lock(*this);
       state = SYNC_FAILED;
@@ -138,6 +146,12 @@ void KOReaderSyncActivity::performSync() {
   // Calculate local progress in KOReader format (for display)
   CrossPointPosition localPos = {currentSpineIndex, currentPage, totalPagesInSpine};
   localProgress = ProgressMapper::toKOReader(epub, localPos);
+
+  if (autoMode && remoteProgress.percentage <= localProgress.percentage + 0.005f) {
+    // Server isn't meaningfully further; nothing to offer.
+    autoFinish = true;
+    return;
+  }
 
   {
     RenderLock lock(*this);
@@ -196,6 +210,10 @@ void KOReaderSyncActivity::onEnter() {
 
   // Check for credentials first
   if (!KOREADER_STORE.hasCredentials()) {
+    if (autoMode) {
+      autoFinish = true;
+      return;
+    }
     state = NO_CREDENTIALS;
     requestUpdate();
     return;
@@ -335,6 +353,15 @@ void KOReaderSyncActivity::render(RenderLock&&) {
 }
 
 void KOReaderSyncActivity::loop() {
+  if (autoFinish) {
+    autoFinish = false;
+    ActivityResult result;
+    result.isCancelled = true;
+    setResult(std::move(result));
+    finish();
+    return;
+  }
+
   if (state == NO_CREDENTIALS || state == SYNC_FAILED || state == UPLOAD_COMPLETE) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       ActivityResult result;

@@ -22,13 +22,14 @@ class KOReaderSyncActivity final : public Activity {
  public:
   explicit KOReaderSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                 const std::shared_ptr<Epub>& epub, const std::string& epubPath, int currentSpineIndex,
-                                int currentPage, int totalPagesInSpine)
+                                int currentPage, int totalPagesInSpine, bool autoMode = false)
       : Activity("KOReaderSync", renderer, mappedInput),
         epub(epub),
         epubPath(epubPath),
         currentSpineIndex(currentSpineIndex),
         currentPage(currentPage),
         totalPagesInSpine(totalPagesInSpine),
+        autoMode(autoMode),
         remoteProgress{},
         remotePosition{},
         localProgress{} {}
@@ -52,6 +53,11 @@ class KOReaderSyncActivity final : public Activity {
     NO_CREDENTIALS
   };
 
+  // Auto mode (sync-on-open): silently finish unless the server is further;
+  // uninteresting outcomes (no remote, errors, already ahead) close without UI.
+  bool autoMode = false;
+  // Set instead of finishing inline from the sync flow; loop() finishes.
+  bool autoFinish = false;
   std::shared_ptr<Epub> epub;
   std::string epubPath;
   int currentSpineIndex;
