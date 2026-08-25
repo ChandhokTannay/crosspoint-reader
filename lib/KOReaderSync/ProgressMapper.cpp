@@ -107,8 +107,9 @@ CrossPointPosition ProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epu
 }
 
 std::string ProgressMapper::generateXPath(int spineIndex, int pageNumber, int totalPages) {
-  // Use 0-based DocFragment indices for KOReader
+  // XPath DocFragment indices are 1-based (KOReader publishes chapter N as
+  // DocFragment[N]), so convert from CrossPoint's 0-based spine index.
   // Use a simple xpath pointing to the DocFragment - KOReader will use the percentage for fine positioning within it
   // Avoid specifying paragraph numbers as they may not exist in the target document
-  return "/body/DocFragment[" + std::to_string(spineIndex) + "]/body";
+  return "/body/DocFragment[" + std::to_string(spineIndex + 1) + "]/body";
 }
