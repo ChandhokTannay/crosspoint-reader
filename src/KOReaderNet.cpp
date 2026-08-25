@@ -1,6 +1,8 @@
 #include "KOReaderNet.h"
 
 #include <Logging.h>
+#include <cstring>
+#include <cstdlib>
 #include <WiFi.h>
 
 #include <string>
@@ -55,6 +57,13 @@ bool connectSavedWifi(const unsigned long deadlineMs, const volatile bool* abort
     WiFi.disconnect(false);
   }
   return false;
+}
+
+int spineOrdinalFromPointer(const char* pointer) {
+  if (!pointer) return -1;
+  const char* marker = strstr(pointer, "/DocFragment[");
+  if (!marker) return -1;
+  return atoi(marker + strlen("/DocFragment["));
 }
 
 }  // namespace KOReaderNet

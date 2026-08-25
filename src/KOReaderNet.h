@@ -11,4 +11,8 @@ namespace KOReaderNet {
 // abort was requested. Loads the credential store itself.
 bool connectSavedWifi(unsigned long deadlineMs, const volatile bool* abortFlag = nullptr);
 void wifiOff();
+// 1-based DocFragment ordinal from a kosync xpointer, or -1 when absent.
+// Percentages are renderer-specific, so cross-device "is it further?"
+// comparisons go by chapter ordinal when both sides provide one.
+int spineOrdinalFromPointer(const char* pointer);
 }  // namespace KOReaderNet

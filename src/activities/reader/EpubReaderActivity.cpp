@@ -997,13 +997,27 @@ void EpubReaderActivity::autoSyncTaskLoop(std::shared_ptr<Epub> epubRef, const i
 
     CrossPointPosition localPos = {spine, page, totalPages};
     const KOReaderPosition local = ProgressMapper::toKOReader(epubRef, localPos);
-    if (remote.percentage <= local.percentage + 0.005f) {
-      LOG_DBG("KOPull", "Server not further (%.2f%% vs %.2f%%)", remote.percentage * 100, local.percentage * 100);
+    // Chapter ordinals are the authoritative comparison; percentages skew
+    // between renderers (the same spot computes differently everywhere).
+    const int remoteOrdinal = KOReaderNet::spineOrdinalFromPointer(remote.progress.c_str());
+    const int localOrdinal = spine + 1;
+    const bool serverFurther = (remoteOrdinal > 0)
+                                   ? (remoteOrdinal > localOrdinal ||
+                                      (remoteOrdinal == localOrdinal && remote.percentage > local.percentage + 0.02f))
+                                   : (remote.percentage > local.percentage + 0.005f);
+    if (!serverFurther) {
+      LOG_DBG("KOPull", "Server not further (ch %d vs %d, %.2f%% vs %.2f%%)", remoteOrdinal, localOrdinal,
+              remote.percentage * 100, local.percentage * 100);
       break;
     }
 
     KOReaderPosition koPos = {remote.progress, remote.percentage};
-    const CrossPointPosition target = ProgressMapper::toCrossPoint(epubRef, koPos, spine, totalPages);
+    CrossPointPosition target = ProgressMapper::toCrossPoint(epubRef, koPos, spine, totalPages);
+    if (remoteOrdinal > 0 && target.spineIndex != remoteOrdinal - 1) {
+      // Trust the pointer's chapter over the percentage-derived estimate.
+      target.spineIndex = remoteOrdinal - 1;
+      target.pageNumber = 0;
+    }
     autoSyncSpine = target.spineIndex;
     autoSyncPage = target.pageNumber;
     autoSyncApplyPending = true;

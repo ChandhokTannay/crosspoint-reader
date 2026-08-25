@@ -66,14 +66,23 @@ void KOReaderSleepSync::attempt() {
   }
 
   // Only push when local progress is at or beyond the server's — never roll
-  // back further progress made on another device.
+  // back further progress made on another device. Chapter ordinals are the
+  // authoritative comparison; percentages skew between renderers.
   KOReaderProgress remote{};
   const auto getResult = KOReaderSyncClient::getProgress(hash, remote);
-  if (getResult == KOReaderSyncClient::OK && remote.percentage > local.percentage) {
-    LOG_DBG("KOSleep", "Server is further (%.2f%% > %.2f%%); not pushing", remote.percentage * 100,
-            local.percentage * 100);
-    KOReaderNet::wifiOff();
-    return;
+  if (getResult == KOReaderSyncClient::OK) {
+    const int remoteOrdinal = KOReaderNet::spineOrdinalFromPointer(remote.progress.c_str());
+    const int localOrdinal = pos.spineIndex + 1;
+    const bool serverFurther = (remoteOrdinal > 0)
+                                   ? (remoteOrdinal > localOrdinal ||
+                                      (remoteOrdinal == localOrdinal && remote.percentage > local.percentage + 0.02f))
+                                   : (remote.percentage > local.percentage);
+    if (serverFurther) {
+      LOG_DBG("KOSleep", "Server is further (ch %d vs %d, %.2f%% vs %.2f%%); not pushing", remoteOrdinal, localOrdinal,
+              remote.percentage * 100, local.percentage * 100);
+      KOReaderNet::wifiOff();
+      return;
+    }
   }
 
   KOReaderProgress upload{};
