@@ -14,56 +14,12 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
-#include "WifiCredentialStore.h"
+#include "KOReaderNet.h"
 #include "util/StringUtils.h"
 
 namespace {
 // Overall budget for the whole attempt; sleep must not be held up longer.
 constexpr unsigned long TOTAL_BUDGET_MS = 15000;
-// Per-network connection wait.
-constexpr unsigned long PER_NETWORK_WAIT_MS = 7000;
-
-void wifiOff() {
-  WiFi.disconnect(false);
-  WiFi.mode(WIFI_OFF);
-}
-
-bool connectSavedWifi(const unsigned long deadline) {
-  auto& store = WifiCredentialStore::getInstance();
-  // The credential store is lazily loaded (normally by the WiFi selection
-  // screen); on a fresh boot it is empty until loaded from file.
-  store.loadFromFile();
-  const auto& creds = store.getCredentials();
-  if (creds.empty()) {
-    return false;
-  }
-
-  WiFi.mode(WIFI_STA);
-
-  // Try the last-connected network first, then the rest.
-  const std::string& last = store.getLastConnectedSsid();
-  std::vector<const WifiCredential*> order;
-  for (const auto& c : creds) {
-    if (c.ssid == last) order.insert(order.begin(), &c);
-    else order.push_back(&c);
-  }
-
-  for (const auto* cred : order) {
-    if (millis() > deadline) break;
-    LOG_DBG("KOSleep", "Trying WiFi: %s", cred->ssid.c_str());
-    WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
-    const unsigned long start = millis();
-    while (millis() - start < PER_NETWORK_WAIT_MS && millis() <= deadline) {
-      if (WiFi.status() == WL_CONNECTED) {
-        LOG_DBG("KOSleep", "WiFi connected: %s", cred->ssid.c_str());
-        return true;
-      }
-      delay(100);
-    }
-    WiFi.disconnect(false);
-  }
-  return false;
-}
 }  // namespace
 
 void KOReaderSleepSync::attempt() {
@@ -103,9 +59,9 @@ void KOReaderSleepSync::attempt() {
 
   LOG_DBG("KOSleep", "Sleep sync: %s at %.2f%%", path.c_str(), local.percentage * 100);
 
-  if (!connectSavedWifi(deadline)) {
+  if (!KOReaderNet::connectSavedWifi(deadline)) {
     LOG_DBG("KOSleep", "No WiFi; skipping sleep sync");
-    wifiOff();
+    KOReaderNet::wifiOff();
     return;
   }
 
@@ -116,7 +72,7 @@ void KOReaderSleepSync::attempt() {
   if (getResult == KOReaderSyncClient::OK && remote.percentage > local.percentage) {
     LOG_DBG("KOSleep", "Server is further (%.2f%% > %.2f%%); not pushing", remote.percentage * 100,
             local.percentage * 100);
-    wifiOff();
+    KOReaderNet::wifiOff();
     return;
   }
 
@@ -127,5 +83,5 @@ void KOReaderSleepSync::attempt() {
   const auto putResult = KOReaderSyncClient::updateProgress(upload);
   LOG_DBG("KOSleep", "Sleep sync push %s", putResult == KOReaderSyncClient::OK ? "OK" : "failed");
 
-  wifiOff();
+  KOReaderNet::wifiOff();
 }

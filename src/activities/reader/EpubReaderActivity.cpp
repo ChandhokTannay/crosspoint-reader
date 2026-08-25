@@ -6,7 +6,9 @@
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <KOReaderDocumentId.h>
 #include <Logging.h>
+#include <WiFi.h>
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -14,6 +16,7 @@
 #include "EpubReaderFootnotesActivity.h"
 #include "EpubReaderPercentSelectionActivity.h"
 #include "KOReaderCredentialStore.h"
+#include "KOReaderNet.h"
 #include "KOReaderSyncActivity.h"
 #include "MappedInputManager.h"
 #include "QrDisplayActivity.h"
@@ -165,6 +168,15 @@ void EpubReaderActivity::onEnter() {
 void EpubReaderActivity::onExit() {
   Activity::onExit();
 
+  // Wait for a running auto-sync task; it holds its own Epub reference but
+  // must not outlive the activity it reports back to.
+  if (!autoSyncExited) {
+    autoSyncExitRequested = true;
+    while (!autoSyncExited) {
+      vTaskDelay(20 / portTICK_PERIOD_MS);
+    }
+  }
+
   // Reset orientation back to portrait for the rest of the UI
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
@@ -183,20 +195,38 @@ void EpubReaderActivity::loop() {
 
   if (pendingAutoSync && section) {
     pendingAutoSync = false;
-    startActivityForResult(
-        std::make_unique<KOReaderSyncActivity>(renderer, mappedInput, epub, epub->getPath(), currentSpineIndex,
-                                               section->currentPage, section->pageCount, /*autoMode=*/true),
-        [this](const ActivityResult& result) {
-          if (!result.isCancelled) {
-            const auto& sync = std::get<SyncResult>(result.data);
-            if (currentSpineIndex != sync.spineIndex || (section && section->currentPage != sync.page)) {
-              RenderLock lock(*this);
-              currentSpineIndex = sync.spineIndex;
-              nextPageNumber = sync.page;
-              section.reset();
-            }
-          }
-        });
+    autoSyncExitRequested = false;
+    autoSyncExited = false;
+    autoSyncInProgress = true;
+    // Parameters are captured via a heap struct so the task owns an Epub
+    // reference and a stable snapshot of the current position.
+    struct AutoSyncParams {
+      EpubReaderActivity* self;
+      std::shared_ptr<Epub> epub;
+      int spine;
+      int page;
+      int totalPages;
+    };
+    auto* params = new AutoSyncParams{this, epub, currentSpineIndex, section->currentPage, section->pageCount};
+    if (xTaskCreate(&EpubReaderActivity::autoSyncTrampoline, "AutoPullTask", 16384, params, 1, nullptr) != pdPASS) {
+      delete params;
+      autoSyncInProgress = false;
+      autoSyncExited = true;
+    }
+    requestUpdate();  // show the Syncing hint
+  }
+
+  if (autoSyncApplyPending) {
+    autoSyncApplyPending = false;
+    if (currentSpineIndex != autoSyncSpine || (section && section->currentPage != autoSyncPage)) {
+      {
+        RenderLock lock(*this);
+        currentSpineIndex = autoSyncSpine;
+        nextPageNumber = autoSyncPage;
+        section.reset();
+      }
+      requestUpdate();
+    }
     return;
   }
 
@@ -816,6 +846,16 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 }
 
 void EpubReaderActivity::renderStatusBar() const {
+  // Small, non-blocking hint while the background open-sync runs
+  if (autoSyncInProgress) {
+    const char* label = tr(STR_SYNCING);
+    const int w = renderer.getTextWidth(SMALL_FONT_ID, label) + 16;
+    const int x = renderer.getScreenWidth() - w - 6;
+    renderer.fillRect(x, 6, w, 24, false);
+    renderer.drawRect(x, 6, w, 24, true);
+    renderer.drawText(SMALL_FONT_ID, x + 8, 10, label);
+  }
+
   // Calculate progress in book
   const int currentPage = section->currentPage + 1;
   const float pageCount = section->pageCount;
@@ -902,4 +942,75 @@ void EpubReaderActivity::restoreSavedPosition() {
     section.reset();
   }
   requestUpdate();
+}
+
+void EpubReaderActivity::autoSyncTrampoline(void* param) {
+  struct AutoSyncParams {
+    EpubReaderActivity* self;
+    std::shared_ptr<Epub> epub;
+    int spine;
+    int page;
+    int totalPages;
+  };
+  auto* p = static_cast<AutoSyncParams*>(param);
+  p->self->autoSyncTaskLoop(p->epub, p->spine, p->page, p->totalPages);
+  auto* self = p->self;
+  delete p;
+  self->autoSyncInProgress = false;
+  self->requestUpdate();
+  self->autoSyncExited = true;
+  vTaskDelete(nullptr);
+}
+
+// Headless sync-on-open: connect (bounded), fetch the server position, and
+// auto-apply it only when it is meaningfully further than the local one.
+// Every failure path is silent — the book simply stays where it is.
+void EpubReaderActivity::autoSyncTaskLoop(std::shared_ptr<Epub> epubRef, const int spine, const int page,
+                                          const int totalPages) {
+  if (!KOREADER_STORE.hasCredentials()) return;
+
+  const bool hadWifi = WiFi.status() == WL_CONNECTED;
+  bool ownWifi = false;
+  if (!hadWifi) {
+    if (!KOReaderNet::connectSavedWifi(millis() + 15000, &autoSyncExitRequested)) {
+      KOReaderNet::wifiOff();
+      LOG_DBG("KOPull", "No WiFi; skipping open sync");
+      return;
+    }
+    ownWifi = true;
+  }
+
+  do {
+    if (autoSyncExitRequested) break;
+
+    const std::string hash = (KOREADER_STORE.getMatchMethod() == DocumentMatchMethod::FILENAME)
+                                 ? KOReaderDocumentId::calculateFromFilename(epubRef->getPath())
+                                 : KOReaderDocumentId::calculate(epubRef->getPath());
+    if (hash.empty() || autoSyncExitRequested) break;
+
+    KOReaderProgress remote{};
+    if (KOReaderSyncClient::getProgress(hash, remote) != KOReaderSyncClient::OK) {
+      LOG_DBG("KOPull", "No remote progress or fetch failed");
+      break;
+    }
+    if (autoSyncExitRequested) break;
+
+    CrossPointPosition localPos = {spine, page, totalPages};
+    const KOReaderPosition local = ProgressMapper::toKOReader(epubRef, localPos);
+    if (remote.percentage <= local.percentage + 0.005f) {
+      LOG_DBG("KOPull", "Server not further (%.2f%% vs %.2f%%)", remote.percentage * 100, local.percentage * 100);
+      break;
+    }
+
+    KOReaderPosition koPos = {remote.progress, remote.percentage};
+    const CrossPointPosition target = ProgressMapper::toCrossPoint(epubRef, koPos, spine, totalPages);
+    autoSyncSpine = target.spineIndex;
+    autoSyncPage = target.pageNumber;
+    autoSyncApplyPending = true;
+    LOG_DBG("KOPull", "Auto-applying server position: %.2f%% (spine %d)", remote.percentage * 100, target.spineIndex);
+  } while (false);
+
+  if (ownWifi) {
+    KOReaderNet::wifiOff();
+  }
 }

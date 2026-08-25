@@ -22,8 +22,17 @@ class EpubReaderActivity final : public Activity {
   // Normalized 0.0-1.0 progress within the target spine item, computed from book percentage.
   float pendingSpineProgress = 0.0f;
   bool pendingScreenshot = false;
-  // Sync-on-open: auto-check the sync server once after the book opens
+  // Sync-on-open: headless background check that auto-applies further
+  // server progress; shows only a small "Syncing" hint while it runs.
   bool pendingAutoSync = false;
+  volatile bool autoSyncExitRequested = false;
+  volatile bool autoSyncExited = true;
+  volatile bool autoSyncInProgress = false;
+  volatile bool autoSyncApplyPending = false;
+  int autoSyncSpine = 0;
+  int autoSyncPage = 0;
+  static void autoSyncTrampoline(void* param);
+  void autoSyncTaskLoop(std::shared_ptr<Epub> epubRef, int spine, int page, int totalPages);
   bool skipNextButtonCheck = false;  // Skip button processing for one frame after subactivity exit
   bool automaticPageTurnActive = false;
 
