@@ -30,6 +30,9 @@ void wifiOff() {
 
 bool connectSavedWifi(const unsigned long deadline) {
   auto& store = WifiCredentialStore::getInstance();
+  // The credential store is lazily loaded (normally by the WiFi selection
+  // screen); on a fresh boot it is empty until loaded from file.
+  store.loadFromFile();
   const auto& creds = store.getCredentials();
   if (creds.empty()) {
     return false;
